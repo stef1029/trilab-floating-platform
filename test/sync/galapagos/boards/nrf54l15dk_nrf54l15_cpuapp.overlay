@@ -2,6 +2,10 @@
 
 / {
     zephyr,user {
+        /* Existing external event input, rising edge hardware capture. */
         event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+
+        /* New hardware scheduled TTL pulse output. */
+        ttl-output-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
     };
 };

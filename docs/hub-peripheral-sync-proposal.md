@@ -17,18 +17,18 @@ counter values onto platform time. No frequency reference is distributed.
 
 ## SYNC
 
-| Item | Requirement |
-|---|---|
-| Generation | Hub timer, output compare + auto-reload. No software GPIO toggle. |
-| Period | N hub ticks; derive N from timer/prescaler registers, not intended seconds. Pulse *k* emitted at `k × N`. Start at 1 s. |
-| Distribution | One line to a capture pin on every port + common ground. Differential (RS-485) for long or noisy runs. |
-| Length matching | Not required (ns/m propagation). |
-| Capture | Same edge polarity on all modules. |
+| Item            | Requirement                                                                                                             |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Generation      | Hub timer, output compare + auto-reload. No software GPIO toggle.                                                       |
+| Period          | N hub ticks; derive N from timer/prescaler registers, not intended seconds. Pulse _k_ emitted at `k × N`. Start at 1 s. |
+| Distribution    | One line to a capture pin on every port + common ground. Differential (RS-485) for long or noisy runs.                  |
+| Length matching | Not required (ns/m propagation).                                                                                        |
+| Capture         | Same edge polarity on all modules.                                                                                      |
 
 ## Pairing
 
-Hub accepts a report for pulse *k* only within acceptance window `W` after
-emitting *k*. Default `W` = half the pulse interval.
+Hub accepts a report for pulse _k_ only within acceptance window `W` after
+emitting _k_. Default `W` = half the pulse interval.
 
 - Reports arriving in the remaining **dead zone** are discarded, never deferred.
 - Two reports from one module in one window: both discarded.
@@ -39,7 +39,7 @@ Cross-check via counter delta. Elapsed intervals at the port:
 
 $$m = \operatorname{round}\!\left(\frac{L_k - L_{k-1}}{N_{\text{local}}}\right)$$
 
-Unambiguous to ~1e-4. Require *m* to equal the pulses the hub emitted between the
+Unambiguous to ~1e-4. Require _m_ to equal the pulses the hub emitted between the
 two accepted reports.
 
 A missed edge yields no report; the hub times out and pairs the next report
@@ -50,12 +50,12 @@ port.
 
 $$T = a_i \cdot t_i + b_i$$
 
-| Term | Definition |
-|---|---|
-| $T$ | platform (hub) time |
+| Term  | Definition                                                   |
+| ----- | ------------------------------------------------------------ |
+| $T$   | platform (hub) time                                          |
 | $t_i$ | port local time = captured counter ÷ nominal timer frequency |
-| $a_i$ | rate coefficient, dimensionless, within tens of ppm of 1 |
-| $b_i$ | offset, platform time at $t_i = 0$ |
+| $a_i$ | rate coefficient, dimensionless, within tens of ppm of 1     |
+| $b_i$ | offset, platform time at $t_i = 0$                           |
 
 Both parameters required. Offset-only correction leaves a sawtooth of order
 60 µs/s for two ±30 ppm oscillators.
@@ -69,9 +69,11 @@ invalidates $b_i$.
 
 Ring buffer of 16–32 recent $(t_k, T_k)$ pairs per module, refit each pulse:
 
-$$a = \frac{\sum_k (t_k - \bar{t})(T_k - \bar{T})}{\sum_k (t_k - \bar{t})^2}
+$$
+a = \frac{\sum_k (t_k - \bar{t})(T_k - \bar{T})}{\sum_k (t_k - \bar{t})^2}
 \qquad
-b = \bar{T} - a\bar{t}$$
+b = \bar{T} - a\bar{t}
+$$
 
 Conditioning (slope must resolve to sub-ppm):
 
@@ -121,20 +123,20 @@ Reward port:
 
 Hub, per module:
 
-| Check | Model-dependent |
-|---|---|
-| Report timeout | no |
-| Late report (dead zone arrival) | no |
-| Duplicate report in one window | no |
-| Counter-delta mismatch | no |
-| Admission screen rejection | yes |
-| RMS residual above threshold | yes |
-| Implausible or discontinuous $a_i$ | yes |
-| Counter regression | no |
+| Check                              | Model-dependent |
+| ---------------------------------- | --------------- |
+| Report timeout                     | no              |
+| Late report (dead zone arrival)    | no              |
+| Duplicate report in one window     | no              |
+| Counter-delta mismatch             | no              |
+| Admission screen rejection         | yes             |
+| RMS residual above threshold       | yes             |
+| Implausible or discontinuous $a_i$ | yes             |
+| Counter regression                 | no              |
 
 Model-independent checks cover acquisition.
 
-Isolated timeouts are not faults. Trigger on timeout *rate* within a rolling
+Isolated timeouts are not faults. Trigger on timeout _rate_ within a rolling
 interval, or consecutive-timeout count. Define both thresholds explicitly.
 
 Ports must report a boot counter or first-report-after-reset flag. Counter
@@ -179,8 +181,8 @@ Identical oscillator part numbers do not give identical frequencies — each uni
 lands independently within tolerance (±30 to ±50 ppm typical), plus temperature
 differences between boards. At 1 ppm = 1 µs/s:
 
-| Relative error | Accumulated |
-|---|---|
-| 1 ppm | 1 ms in ~17 min |
-| 30 ppm | 1 ms in ~33 s |
-| 30 ppm | 108 ms in 1 hour |
+| Relative error | Accumulated      |
+| -------------- | ---------------- |
+| 1 ppm          | 1 ms in ~17 min  |
+| 30 ppm         | 1 ms in ~33 s    |
+| 30 ppm         | 108 ms in 1 hour |

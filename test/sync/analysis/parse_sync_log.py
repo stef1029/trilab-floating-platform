@@ -116,6 +116,36 @@ GENERATOR_COLUMNS = [
     "raw_line",
 ]
 
+TTL_RECORD_TYPES = {
+    "TTL_PULSE_SCHEDULED",
+    "TTL_PULSE_GENERATED",
+    "TTL_PULSE_ACQUIRED",
+    "TTL_PULSE_RESULT",
+    "TTL_PULSE_TIMEOUT",
+}
+
+TTL_COLUMNS = [
+    "record_type",
+    "node",
+    "test_segment_id",
+    "sequence",
+    "target_hub_ticks",
+    "target_local_ticks",
+    "pulse_width_us",
+    "generated_local_ticks",
+    "generated_hub_ticks",
+    "generation_error_ns",
+    "acquired_hub_ticks",
+    "wire_offset_ns",
+    "total_error_ns",
+    "timeout_hub_ticks",
+    "generated_seen",
+    "acquired_seen",
+    "source_line",
+    "raw_line",
+    "schema_version",
+]
+
 DIAGNOSTIC_COLUMNS = [
     "record_type",
     "node",
@@ -507,6 +537,116 @@ def parse_generator(
     }
 
 
+def parse_ttl_record(
+    fields: list[str],
+    raw_line: str,
+    source_line: int,
+    schema_version: int,
+    test_segment_id: int,
+) -> dict[str, Any]:
+    record_type = fields[0]
+    row: dict[str, Any] = {
+        "record_type": record_type,
+        "node": "korora",
+        "test_segment_id": test_segment_id,
+        "sequence": "",
+        "target_hub_ticks": "",
+        "target_local_ticks": "",
+        "pulse_width_us": "",
+        "generated_local_ticks": "",
+        "generated_hub_ticks": "",
+        "generation_error_ns": "",
+        "acquired_hub_ticks": "",
+        "wire_offset_ns": "",
+        "total_error_ns": "",
+        "timeout_hub_ticks": "",
+        "generated_seen": "",
+        "acquired_seen": "",
+        "source_line": source_line,
+        "raw_line": raw_line,
+        "schema_version": schema_version,
+    }
+
+    if record_type == "TTL_PULSE_SCHEDULED":
+        if len(fields) != 6:
+            raise ValueError(
+                f"TTL_PULSE_SCHEDULED requires 5 data fields, got {len(fields) - 1}"
+            )
+        row.update(
+            {
+                "node": normalize_node(fields[1]),
+                "sequence": parse_int(fields[2]),
+                "target_hub_ticks": parse_int(fields[3]),
+                "target_local_ticks": parse_int(fields[4]),
+                "pulse_width_us": parse_int(fields[5]),
+            }
+        )
+    elif record_type == "TTL_PULSE_GENERATED":
+        if len(fields) != 7:
+            raise ValueError(
+                f"TTL_PULSE_GENERATED requires 6 data fields, got {len(fields) - 1}"
+            )
+        row.update(
+            {
+                "node": normalize_node(fields[1]),
+                "sequence": parse_int(fields[2]),
+                "generated_local_ticks": parse_int(fields[3]),
+                "generated_hub_ticks": parse_int(fields[4]),
+                "target_hub_ticks": parse_int(fields[5]),
+                "generation_error_ns": parse_int(fields[6]),
+            }
+        )
+    elif record_type == "TTL_PULSE_ACQUIRED":
+        if len(fields) != 6:
+            raise ValueError(
+                f"TTL_PULSE_ACQUIRED requires 5 data fields, got {len(fields) - 1}"
+            )
+        row.update(
+            {
+                "node": normalize_node(fields[1]),
+                "sequence": parse_int(fields[2]),
+                "acquired_hub_ticks": parse_int(fields[3]),
+                "target_hub_ticks": parse_int(fields[4]),
+                "total_error_ns": parse_int(fields[5]),
+            }
+        )
+    elif record_type == "TTL_PULSE_RESULT":
+        if len(fields) != 9:
+            raise ValueError(
+                f"TTL_PULSE_RESULT requires 8 data fields, got {len(fields) - 1}"
+            )
+        row.update(
+            {
+                "sequence": parse_int(fields[1]),
+                "target_hub_ticks": parse_int(fields[2]),
+                "target_local_ticks": parse_int(fields[3]),
+                "generated_hub_ticks": parse_int(fields[4]),
+                "acquired_hub_ticks": parse_int(fields[5]),
+                "generation_error_ns": parse_int(fields[6]),
+                "wire_offset_ns": parse_int(fields[7]),
+                "total_error_ns": parse_int(fields[8]),
+            }
+        )
+    elif record_type == "TTL_PULSE_TIMEOUT":
+        if len(fields) != 6:
+            raise ValueError(
+                f"TTL_PULSE_TIMEOUT requires 5 data fields, got {len(fields) - 1}"
+            )
+        row.update(
+            {
+                "sequence": parse_int(fields[1]),
+                "target_hub_ticks": parse_int(fields[2]),
+                "timeout_hub_ticks": parse_int(fields[3]),
+                "generated_seen": parse_int(fields[4]),
+                "acquired_seen": parse_int(fields[5]),
+            }
+        )
+    else:
+        raise ValueError(f"unsupported TTL record type {record_type}")
+
+    return row
+
+
 def parse_diagnostic(
     fields: list[str],
     raw_line: str,
@@ -773,6 +913,7 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
     events: list[dict[str, Any]] = []
     event_matches: list[dict[str, Any]] = []
     generators: list[dict[str, Any]] = []
+    ttl_records: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     faults: list[dict[str, Any]] = []
@@ -784,6 +925,8 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
     synthetic_event_ids: dict[str, int] = defaultdict(int)
     seen_nodes = set(KNOWN_NODES)
     schema_version = 1
+    ttl_test_segment_id = 0
+    last_ttl_scheduled_sequence: int | None = None
 
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for source_line, original_line in enumerate(handle, start=1):
@@ -822,6 +965,27 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
                 if record_type == "EVENT_MATCH":
                     event_matches.append(
                         parse_event_match(fields, raw, source_line, schema_version)
+                    )
+                    continue
+
+                if record_type in TTL_RECORD_TYPES:
+                    if record_type == "TTL_PULSE_SCHEDULED":
+                        scheduled_sequence = parse_int(fields[2])
+                        if (
+                            last_ttl_scheduled_sequence is not None
+                            and scheduled_sequence <= last_ttl_scheduled_sequence
+                        ):
+                            ttl_test_segment_id += 1
+                        last_ttl_scheduled_sequence = scheduled_sequence
+
+                    ttl_records.append(
+                        parse_ttl_record(
+                            fields,
+                            raw,
+                            source_line,
+                            schema_version,
+                            ttl_test_segment_id,
+                        )
                     )
                     continue
 
@@ -911,6 +1075,7 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
         "events": events,
         "event_matches": event_matches,
         "generators": generators,
+        "ttl_records": ttl_records,
         "diagnostics": diagnostics,
         "links": links,
         "faults": faults,
@@ -942,6 +1107,7 @@ def parse_inputs(
             "events": [],
             "event_matches": [],
             "generators": [],
+            "ttl_records": [],
             "diagnostics": [],
             "links": [],
             "faults": [],
@@ -973,6 +1139,11 @@ def parse_inputs(
         parsed["generators"],
     )
     write_csv(
+        output / "ttl_records.csv",
+        TTL_COLUMNS,
+        parsed["ttl_records"],
+    )
+    write_csv(
         output / "diagnostics.csv",
         DIAGNOSTIC_COLUMNS,
         parsed["diagnostics"],
@@ -1002,6 +1173,7 @@ def parse_inputs(
             "sync": len(parsed["sync"]),
             "events": len(parsed["events"]),
             "event_matches": len(parsed["event_matches"]),
+            "ttl_records": len(parsed["ttl_records"]),
             "diagnostics": len(parsed["diagnostics"]),
             "links": len(parsed["links"]),
             "faults": len(parsed["faults"]),
@@ -1070,6 +1242,7 @@ def main() -> None:
     print(f"Korora SYNC records:     {counts['sync']}")
     print(f"Korora EVENT records:    {counts['events']}")
     print(f"Korora EVENT_MATCH rows: {counts['event_matches']}")
+    print(f"Korora TTL records:      {counts['ttl_records']}")
     print(f"Adelie clock samples:    {counts['adelie_clock']}")
     print(f"Adelie command rows:     {counts['adelie_commands']}")
     print(f"Parse failures:          {counts['unknown']}")

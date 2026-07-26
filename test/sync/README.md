@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository implements a four node timing experiment for measuring clock conversion quality, external event alignment, and command latency.
+This repository implements a four node timing experiment for measuring clock conversion quality, external event alignment, scheduled TTL generation, and command latency.
 
 The system uses Korora as the reference time domain. Fairy and Galapagos maintain independent affine clock models that convert their local timestamps into Korora timer ticks. Adelie is a laptop client that measures application level clock exchange quality and command round trip latency through Bluetooth.
 
@@ -32,6 +32,8 @@ Its responsibilities are:
 - Capture the shared external event locally in hardware
 - Convert remote event timestamps into Korora time
 - Match remote events to the nearest Korora reference event
+- Schedule hardware TTL pulses on Galapagos
+- Capture the returned Galapagos TTL pulse on P1.12 using GPIOTE, PPI, and TIMER3
 - Stream versioned CSV records over the virtual serial port
 
 ### Fairy
@@ -69,6 +71,9 @@ Its responsibilities are:
 - Report selected Bluetooth connection anchor timestamps
 - Capture the shared external event on P1.11
 - Use GPIOTE, DPPI, and GRTC for hardware event capture
+- Receive scheduled TTL commands from Korora
+- Generate a hardware timed TTL pulse on P1.12 using GRTC compare events, DPPI, and GPIOTE SET and CLR tasks
+- Report the local timestamp associated with the generated TTL edge
 - Queue outgoing 40 byte records
 - Send one Bluetooth notification at a time
 - Preserve a nominal 16 MHz timestamp domain by multiplying GRTC microseconds by 16
@@ -95,7 +100,7 @@ Korora uses a 16 MHz timer as the common reference domain.
 
 Fairy reports local TIM2 ticks at 16 MHz.
 
-Galapagos receives GRTC timestamps at 1 MHz and multiplies them by 16 before transmission. Bluetooth anchor timestamps are also represented in the same nominal 16 MHz domain.
+Galapagos receives GRTC timestamps at 1 MHz and multiplies them by 16 before transmission. Bluetooth anchor timestamps and scheduled TTL timestamps are represented in the same nominal 16 MHz domain.
 
 Adelie uses host monotonic nanoseconds at 1 GHz.
 
@@ -141,6 +146,40 @@ Galapagos sends selected anchor reports to Korora in the shared 40 byte frame. K
 
 Galapagos currently sends approximately one selected anchor report per second.
 
+### Scheduled Galapagos TTL path
+
+Korora periodically chooses a target time in the Korora domain and uses the current Galapagos affine model to calculate the corresponding Galapagos local target.
+
+Korora sends a 20 byte scheduling command over the Galapagos TTL control characteristic. Galapagos uses two absolute GRTC compare events to generate the rising and falling edges entirely in hardware.
+
+The output path is:
+
+```text
+Galapagos GRTC SET compare
+→ DPPI connection
+→ GPIOTE SET task
+→ Galapagos P1.12 rising edge
+→ Korora P1.12 input
+→ GPIOTE event
+→ PPI connection
+→ Korora TIMER3 capture
+```
+
+A second GRTC compare triggers the Galapagos GPIOTE CLR task at the requested pulse width.
+
+Korora TIMER3 is cleared from the same TIMER2 compare event that begins each 4 Hz reference interval. This keeps TIMER3 phase aligned with TIMER2 while leaving the existing TIMER2 capture channels unchanged.
+
+The standard automated test currently uses:
+
+```text
+lead time 300 ms
+period 1000 ms
+pulse width 100 us
+timeout 250 ms after the target
+```
+
+Korora logs the scheduled target, the generated timestamp reported by Galapagos, the locally acquired edge, and the combined result.
+
 ## External event capture
 
 A shared rising edge should be wired to the event input on each participating embedded node.
@@ -184,6 +223,14 @@ Do not connect independently powered USB board power rails together.
 - Common ground with the event generator and the other boards
 
 Verify that the event source uses safe logic levels for every connected board.
+
+### Galapagos scheduled TTL output
+
+- Galapagos P1.12 to Korora P1.12
+- Galapagos ground to Korora ground
+- Keep the P1.11 shared external event wiring separate from the P1.12 scheduled TTL wiring
+
+The current direct digital connection assumes that Galapagos produces a 3.3 V compatible high level for Korora. Do not connect the two board power rails together when both boards are independently USB powered.
 
 ## Repository layout
 
@@ -236,7 +283,7 @@ Repository also includes `arduino_pulse` which is the GPIO event generator made 
 
 5. Confirm that Korora prints `SCHEMA,3`
 
-6. Confirm that Korora prints its `READY` record
+6. Confirm that Korora prints its `READY` record and `TTL_INPUT_READY`
 
 7. Confirm that the Fairy link produces `PAIR_RAW` and `SYNC` records
 
@@ -244,11 +291,13 @@ Repository also includes `arduino_pulse` which is the GPIO event generator made 
 
 9. Wait for both remote clock models to reach `TRACK`
 
-10. Start Adelie and confirm clock replies and command stage notifications
+10. Confirm that the scheduled TTL test produces `TTL_PULSE_SCHEDULED`, `TTL_PULSE_GENERATED`, `TTL_PULSE_ACQUIRED`, and `TTL_PULSE_RESULT`
 
-11. Apply a shared GPIO pulse and confirm Korora, Fairy, and Galapagos event records
+11. Start Adelie and confirm clock replies and command stage notifications
 
-12. Record the Korora serial stream for analysis
+12. Apply a shared GPIO pulse and confirm Korora, Fairy, and Galapagos event records
+
+13. Record the Korora serial stream for analysis
 
 ## Expected startup records
 
@@ -259,6 +308,13 @@ SCHEMA,3
 ```
 
 It then prints schema comments and a `READY` row.
+
+The Korora TTL input should report:
+
+```text
+TTL_INPUT_READY,korora,pin=44,timer=3,cc=0
+TTL_TEST_CONFIG,lead_ms=300,period_ms=1000,width_us=100,ttl_input_pin=44
+```
 
 Typical link activity includes:
 
@@ -274,8 +330,9 @@ Galapagos should report:
 
 ```text
 EVENT_CAPTURE_READY,galapagos,pin=43,gpiote_ch=0,grtc_ch=0
+TTL_OUTPUT_READY,galapagos,pin=44,gpiote_ch=1,set_grtc_ch=1,clear_grtc_ch=2
 BLE_ADVERTISING,galapagos
-READY,galapagos,1,40,HARDWARE_CAPTURE,grtc_ch=0
+READY,galapagos,1,40,HARDWARE_CAPTURE,event_pin=43,ttl_output_pin=44,grtc_ch=0
 ```
 
 Channel values are allocated at runtime and can differ.
@@ -305,7 +362,7 @@ The analysis pipeline has three main stages.
 
 `parse_sync_log.py` reads the Korora serial stream and the Adelie CSV files.
 
-It produces normalized CSV files for pairs, synchronization rows, events, matches, diagnostics, links, faults, and Adelie measurements.
+It produces normalized CSV files for pairs, synchronization rows, events, matches, diagnostics, links, faults, scheduled TTL records, and Adelie measurements.
 
 ### Analyse
 
@@ -320,10 +377,16 @@ It produces normalized CSV files for pairs, synchronization rows, events, matche
 - Event absolute error
 - Event transport age
 - Event matching counts
+- Scheduled TTL generation error
+- Scheduled TTL acquisition error
+- Galapagos generated to Korora acquired offset
+- Scheduled TTL completion and timeout counts
 - Adelie clock exchange RTT
 - Adelie rolling model quality
 - Command stage latency
 - End to end command RTT
+
+The node summaries and scheduled TTL path are written into one integrated `summary.csv` and `summary.txt`.
 
 ### Plot
 
@@ -337,6 +400,9 @@ Useful plot groups include:
 - External event error
 - Event error distribution
 - Event error compared with transport age
+- Scheduled TTL error components
+- Scheduled TTL total error distribution
+- Scheduled TTL success and timeout outcomes
 - Adelie network RTT
 - Adelie model prediction error
 - Command latency breakdown
@@ -354,5 +420,15 @@ One step prediction error evaluates how well the previous model predicts the nex
 Event signed error can have a median near zero even when the absolute error is large. Positive and negative errors cancel in the signed statistic.
 
 Transport age is not the synchronization error. It describes how old the captured event was when it was reported.
+
+For the scheduled TTL path:
+
+```text
+generation error = converted Galapagos generated time minus target Korora time
+wire offset = Korora acquired time minus converted Galapagos generated time
+total error = Korora acquired time minus target Korora time
+```
+
+`total_error_ns` is the main end to end result. `wire_offset_ns` contains fixed hardware path delay, signal threshold delay, timer reconstruction error, and remaining Galapagos to Korora clock model error. A negative value does not mean that electrical propagation occurred backwards in time.
 
 Adelie one way latency values are estimates because they depend on a noisy host to Korora clock model and on path symmetry assumptions. End to end command RTT is the strongest Adelie latency measurement.

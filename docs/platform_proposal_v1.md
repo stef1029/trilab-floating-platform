@@ -38,7 +38,6 @@
  └───────────────────────────────────────────────────────┘
 ```
 
-
 ## Decisions TLDR:
 
 - **Moving hub:** nRF52840 running Zephyr / nRF Connect SDK
@@ -52,6 +51,7 @@
 - **Logging:** Log requested and actual action timestamps, command IDs, event sequence IDs, clock health records, and synchronization quality
 
 For example:
+
 ```text
 REWARD-PORT 3:
   cue_start_tick = 18,500,000
@@ -70,6 +70,7 @@ Hub delivers this command structure early, leaving the reward-port MCU with timi
 ## Shared 1 MHz TIMEBASE
 
 A stable oscillator or TCXO is divided to generate a 1 MHz differential TIMEBASE. Each reward-port MCU:
+
 - runs its processor from an internal or local processor clock
 - configures a hardware timer to count external TIMEBASE edges
 - obtains one timing tick per microsecond
@@ -77,6 +78,7 @@ A stable oscillator or TCXO is divided to generate a 1 MHz differential TIMEBASE
 - does not reconstruct time from RS-485 messages
 
 Advantages:
+
 - all reward ports share frequency directly
 - processor startup and PLL behaviour do not affect event time
 - distribution frequency is much lower than a 16–32 MHz processor clock
@@ -86,6 +88,7 @@ Advantages:
 ## Separate SYNC line
 
 A common timebase establishes a common rate but not a common counter value. Modules may start counting at different times. The hub therefore distributes a separate differential SYNC signal. Example semantics:
+
 - **Session-start SYNC:** establishes the initial epoch and module offset.
 - **Periodic SYNC:** captured by every module for clock-health verification.
 - **Periodic SYNC should not blindly reset counters.** It should record a capture and check whether the expected offset has changed.
@@ -94,11 +97,13 @@ For module \(i\):
 $H = L_i + b_i$
 
 where:
+
 - \(H\) is platform time
 - \(L_i\) is the reward-port local external-clock counter
 - \(b_i\) is the module offset measured from SYNC
 
 Because frequency is shared, \(b_i\) should remain constant. A change indicates a fault such as:
+
 - a missed or additional TIMEBASE edge
 - a corrupted SYNC edge
 - timer reconfiguration
@@ -110,6 +115,7 @@ SYNC frequency is to be determined, needs can be estimated with experimental dat
 ## Clock-fault behaviour
 
 Each reward port should detect:
+
 - TIMEBASE missing
 - unexpected offset change
 - SYNC timeout
@@ -117,6 +123,7 @@ Each reward port should detect:
 - reset during an active session
 
 On clock failure, the reward port should:
+
 1. force valve outputs off
 2. cancel or disarm future time critical outputs
 3. preserve existing event records where possible
@@ -130,6 +137,7 @@ At 1 MHz, a 32-bit counter wraps after:
 $2^{32}\ \mu s \approx 71.58\ \text{minutes}$
 
 A software overflow word extends it to 64 bits:
+
 ```c
 uint64_t timestamp =
     ((uint64_t)overflow_count << 32) |
@@ -144,9 +152,10 @@ The implementation must handle capture close to overflow without producing an in
 
 # 2. Internal cable communication
 
-## Why not I2C 
+## Why not I2C
 
 I2C is not preferred for the removable multidrop platform trunk because of:
+
 - sensitivity to bus capacitance and connector changes
 - weaker noise margin near solenoid, PWM, audio, and power wiring
 - awkward expansion and hot plug behaviour
@@ -189,6 +198,7 @@ struct bus_frame_header {
 ```
 
 Followed by payload and CRC. The protocol should define:
+
 - byte order
 - framing/escaping
 - maximum payload
@@ -200,6 +210,7 @@ Followed by payload and CRC. The protocol should define:
 ## Discovery and commissioning
 
 Each MCU exposes its factory UID. A practical discovery process:
+
 1. hub enters commissioning mode
 2. uncommissioned modules respond in pseudorandom or UID derived slots
 3. hub resolves collisions through repeated rounds
@@ -212,6 +223,7 @@ This needs to happen only when there isn't a mapping already present.
 ## Polling policy
 
 Modules respond only when addressed. The hub polls:
+
 - event count or status first
 - event records in bounded batches
 - health counters at a lower rate
@@ -224,6 +236,7 @@ Modules respond only when addressed. The hub polls:
 ## Selected family
 
 Preferred baseline: **STM32G071KB** in a 32-pin package. Reasons:
+
 - one 32-bit general purpose timer
 - additional timers for capture, compare, PWM, and audio
 - DMA
@@ -235,23 +248,24 @@ Preferred baseline: **STM32G071KB** in a 32-pin package. Reasons:
 
 ## Pin budget
 
-| Function | Approximate GPIO count |
-| --- | ---: |
-| RS-485 TX, RX, driver-enable | 3 |
-| TIMEBASE differential receiver output | 1 |
-| SYNC differential receiver output | 1 |
-| Beam-break capture | 1 |
-| RGB PWM | 3 |
-| Audio PWM/data | 1 |
-| Solenoid command and optional sense | 2 |
-| SWD debug | 2 |
-| Address/configuration/service | 1–3 |
-| Status/test output | 1 |
-| Optional current/flow/temperature inputs | 1–3 |
+| Function                                 | Approximate GPIO count |
+| ---------------------------------------- | ---------------------: |
+| RS-485 TX, RX, driver-enable             |                      3 |
+| TIMEBASE differential receiver output    |                      1 |
+| SYNC differential receiver output        |                      1 |
+| Beam-break capture                       |                      1 |
+| RGB PWM                                  |                      3 |
+| Audio PWM/data                           |                      1 |
+| Solenoid command and optional sense      |                      2 |
+| SWD debug                                |                      2 |
+| Address/configuration/service            |                    1–3 |
+| Status/test output                       |                      1 |
+| Optional current/flow/temperature inputs |                    1–3 |
 
 ## Timer allocation - provisional
 
 A candidate allocation is:
+
 ```text
 TIM2  — 32-bit external TIMEBASE counter
 TIM3  — RGB PWM channels
@@ -285,6 +299,7 @@ Hardware capture latches the timestamp at the electrical edge. Interrupt latency
 ## Event structure
 
 Example event record:
+
 ```c
 struct port_event {
     uint64_t actual_timestamp_ticks;
@@ -299,6 +314,7 @@ struct port_event {
 ```
 
 Event types examples:
+
 ```text
 BEAM_ENTER
 BEAM_EXIT
@@ -318,6 +334,7 @@ All events get captured, allows for full reconstruction of events
 ## Output scheduling
 
 Use timer output compare instead of firmware delays for:
+
 - RGB onset and offset
 - audio envelope or waveform start
 - valve gate on and off
@@ -328,6 +345,7 @@ Command acceptance requires sufficient lead time, both for practical implementat
 ## Conditional rules
 
 Local rules reduce latency:
+
 ```text
 IF response_window_active
 AND module_is_correct_target
@@ -338,6 +356,7 @@ THEN:
 ```
 
 Rules should be:
+
 - configured by the hub
 - associated with a configuration generation
 - bounded in capability
@@ -363,6 +382,7 @@ MCU timer PWM
 ```
 
 Requirements:
+
 - defined off-state during reset
 - configurable intensity and duration
 - timer-controlled start and stop
@@ -397,6 +417,7 @@ waveform buffer
 The MCU should trigger playback from a timer event. Interrupt driven sample generation is not acceptable for calibrated timing.
 
 The final design depends on:
+
 - required frequency range
 - sound pressure level
 - waveform complexity
@@ -411,6 +432,7 @@ The final design depends on:
 ## Driver requirements
 
 Each valve driver should include:
+
 - logic-level MOSFET
 - gate pulldown
 - defined off state during reset
@@ -423,6 +445,7 @@ Each valve driver should include:
 ## Power regulation
 
 A battery is not a stable valve rail. Valve force and timing may vary with state of charge if connected directly. Proposed architecture:
+
 ```text
 Battery / protected supply
     ├── regulated 3.3 V logic domain
@@ -430,6 +453,7 @@ Battery / protected supply
 ```
 
 The design must specify:
+
 - valve voltage and peak current
 - simultaneous valve/audio activation assumptions
 - cable voltage drop
@@ -445,6 +469,7 @@ The design must specify:
 ## Signal pairs
 
 Minimum data/timing pairs:
+
 ```text
 Pair 1: RS-485 A / B
 Pair 2: TIMEBASE+ / TIMEBASE-
@@ -467,6 +492,7 @@ Pair 4: distributed higher-voltage POWER / GND
 ## Module protection and test access
 
 Each module should include:
+
 - local decoupling
 - local bulk capacitance near the valve driver
 - ESD/TVS protection selected for the relevant pair
@@ -481,6 +507,7 @@ Each module should include:
 ## Hub responsibilities
 
 The moving nRF52840 hub owns:
+
 - platform time authority
 - trial and protocol configuration
 - future timestamp command scheduling
@@ -497,6 +524,7 @@ The moving nRF52840 hub owns:
 BLE delivery is not real-time storage. The hub should buffer events until acknowledged or safely written to the host.
 
 Buffer design should define:
+
 - expected average and burst event rates
 - record size
 - minimum disconnected duration
@@ -514,6 +542,7 @@ The platform should preserve timing correctness during temporary BLE interruptio
 ## EMC validation
 
 Test with (if tools available):
+
 - maximum valve activity
 - maximum LED PWM
 - maximum audio load
@@ -526,6 +555,7 @@ Record noise spectra and artefacts in the actual acquisition chain.
 ## Endurance validation
 
 Running longer than the target session duration with:
+
 - maximum expected IMU rate
 - high reward port event load
 - delayed or interrupted host BLE
@@ -534,6 +564,7 @@ Running longer than the target session duration with:
 - worst case environmental temperature
 
 Monitor:
+
 - battery voltage
 - regulator temperature
 - buffer occupancy
@@ -541,4 +572,3 @@ Monitor:
 - BLE reconnects
 - module resets
 - valve rail droop
-

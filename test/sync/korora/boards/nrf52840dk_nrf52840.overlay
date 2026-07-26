@@ -3,17 +3,23 @@
 
 / {
     zephyr,user {
-        /* SYNC output to the STM32. */
+        /* Korora hardware synchronization output to Fairy. */
         sync-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
 
-        /*
-         * Shared external event input.
-         */
+        /* Existing shared external event input. */
         event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+
+        /* Galapagos scheduled TTL output is wired here. */
+        ttl-input-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
     };
 };
 
 &timer2 {
+    status = "okay";
+};
+
+/* Phase mirror used only for the new TTL hardware capture. */
+&timer3 {
     status = "okay";
 };
 

@@ -96,6 +96,7 @@ The moving hub supports two concurrent BLE links:
 The computer acts as Central, The moving hub acts as Peripheral and exposes experiment-data and control services.
 
 Traffic includes:
+
 - reward-port events
 - IMU records
 - executed cue and reward events
@@ -108,6 +109,7 @@ Traffic includes:
 The moving hub acts as Central. The stationary bridge acts as Peripheral.
 
 Traffic is low volume:
+
 - connection-anchor timing information
 - clock-quality updates
 - future synchronization-marker schedules
@@ -132,6 +134,7 @@ Bluetooth ISO time synchronization remains an alternative if one source must syn
 Precision synchronization should use a future timestamp, not a “toggle when this BLE packet arrives” command.
 
 Example:
+
 ```text
 SYNC_SCHEDULE:
   sync_id          = 105
@@ -140,6 +143,7 @@ SYNC_SCHEDULE:
 ```
 
 The stationary bridge:
+
 1. converts `hub_trigger_tick` into stationary time
 2. verifies that the command arrived before the minimum arm deadline
 3. programs a hardware timer compare
@@ -154,6 +158,7 @@ A `FIRE_NOW` command may be retained for wiring tests and latency measurements b
 ## DAQ recording and USB transport
 
 The DAQ records the TTL transition against its own hardware sample clock:
+
 ```text
 sync_id 105:
   hub timestamp = H105
@@ -175,12 +180,14 @@ Coeffs of the linear transformation should stay stable throughout the experiment
 Every marker should have a monotonically increasing `sync_id`.
 
 Regular anonymous 1 Hz pulses can become ambiguous after:
+
 - a missed pulse
 - DAQ restart
 - BLE reconnect
 - partial recording
 
 Recommended approach:
+
 - regular timing pulses
 - periodic distinctive barcode bursts or pseudo-random intervals
 - explicit marker IDs in hub and bridge logs
@@ -189,12 +196,14 @@ Recommended approach:
 ## Bidirectional TTL
 
 The bridge should provide:
+
 ```text
 SYNC_OUT -> DAQ digital input
 SYNC_IN  <- DAQ or electrophysiology digital output
 ```
 
 This supports:
+
 - hub-master synchronization
 - DAQ-master synchronization
 - additional validation
@@ -214,6 +223,7 @@ The stationary bridge may provide a separate TTL output for laser control. The l
 ## Internal timing validation
 
 Using an oscilloscope to compare:
+
 - hub TIMEBASE at source
 - TIMEBASE at first, middle, and final reward ports
 - SYNC edges at all modules
@@ -221,6 +231,7 @@ Using an oscilloscope to compare:
 - captured beam-test edges
 
 Measuring:
+
 - propagation delay
 - channel-to-channel skew
 - jitter
@@ -230,6 +241,7 @@ Measuring:
 ## Wireless bridge validation
 
 Generating future timestamped outputs on both hub and stationary bridge and observe them simultaneously. We test:
+
 - normal radio conditions
 - maximum event traffic
 - two active BLE connections
@@ -243,6 +255,7 @@ Generating future timestamped outputs on both hub and stationary bridge and obse
 During development, we produce synthetic sync events. Fit the clock map and calculate residual error.
 
 Provisional acceptance targets:
+
 - no clock discontinuities
 - no unidentified marker loss
 - no systematic error growth through a multi-hour session

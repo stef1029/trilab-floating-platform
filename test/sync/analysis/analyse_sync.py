@@ -378,6 +378,192 @@ def derive_events(events: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
     return events
 
 
+def derive_ttl_pulses(ttl_records: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
+    ttl_records = normalize_nodes(ttl_records)
+    ttl_records = numeric(
+        ttl_records,
+        [
+            "test_segment_id",
+            "sequence",
+            "target_hub_ticks",
+            "target_local_ticks",
+            "pulse_width_us",
+            "generated_local_ticks",
+            "generated_hub_ticks",
+            "generation_error_ns",
+            "acquired_hub_ticks",
+            "wire_offset_ns",
+            "total_error_ns",
+            "timeout_hub_ticks",
+            "generated_seen",
+            "acquired_seen",
+            "source_line",
+        ],
+    )
+
+    if ttl_records.empty:
+        return ttl_records
+
+    ttl_records = ttl_records.dropna(subset=["sequence"]).copy()
+    if "test_segment_id" not in ttl_records:
+        ttl_records["test_segment_id"] = 0
+    ttl_records["test_segment_id"] = ttl_records["test_segment_id"].fillna(0)
+    ttl_records = ttl_records.sort_values(
+        ["test_segment_id", "source_line"]
+    ).reset_index(drop=True)
+
+    rows: list[dict[str, Any]] = []
+
+    for (segment_id, sequence), group in ttl_records.groupby(
+        ["test_segment_id", "sequence"], sort=False
+    ):
+        def pick(column: str, preferred: tuple[str, ...]) -> float:
+            if column not in group:
+                return math.nan
+            for record_type in preferred:
+                values = group.loc[
+                    group["record_type"] == record_type, column
+                ].dropna()
+                if not values.empty:
+                    return float(values.iloc[-1])
+            values = group[column].dropna()
+            return float(values.iloc[-1]) if not values.empty else math.nan
+
+        types = set(group["record_type"].astype(str))
+        completed = "TTL_PULSE_RESULT" in types
+        timed_out = "TTL_PULSE_TIMEOUT" in types
+
+        target_hub_ticks = pick(
+            "target_hub_ticks",
+            (
+                "TTL_PULSE_RESULT",
+                "TTL_PULSE_ACQUIRED",
+                "TTL_PULSE_GENERATED",
+                "TTL_PULSE_SCHEDULED",
+                "TTL_PULSE_TIMEOUT",
+            ),
+        )
+        target_local_ticks = pick(
+            "target_local_ticks",
+            ("TTL_PULSE_RESULT", "TTL_PULSE_SCHEDULED"),
+        )
+        generated_hub_ticks = pick(
+            "generated_hub_ticks",
+            ("TTL_PULSE_RESULT", "TTL_PULSE_GENERATED"),
+        )
+        acquired_hub_ticks = pick(
+            "acquired_hub_ticks",
+            ("TTL_PULSE_RESULT", "TTL_PULSE_ACQUIRED"),
+        )
+        generation_error_ns = pick(
+            "generation_error_ns",
+            ("TTL_PULSE_RESULT", "TTL_PULSE_GENERATED"),
+        )
+        wire_offset_ns = pick("wire_offset_ns", ("TTL_PULSE_RESULT",))
+        total_error_ns = pick(
+            "total_error_ns",
+            ("TTL_PULSE_RESULT", "TTL_PULSE_ACQUIRED"),
+        )
+
+        timeout_generated_seen = pick(
+            "generated_seen", ("TTL_PULSE_TIMEOUT",)
+        )
+        timeout_acquired_seen = pick(
+            "acquired_seen", ("TTL_PULSE_TIMEOUT",)
+        )
+        generated_seen = (
+            math.isfinite(generated_hub_ticks)
+            or (math.isfinite(timeout_generated_seen) and timeout_generated_seen > 0)
+        )
+        acquired_seen = (
+            math.isfinite(acquired_hub_ticks)
+            or (math.isfinite(timeout_acquired_seen) and timeout_acquired_seen > 0)
+        )
+
+        if completed:
+            outcome = "RESULT"
+        elif timed_out:
+            outcome = "TIMEOUT"
+        else:
+            outcome = "INCOMPLETE"
+
+        rows.append(
+            {
+                "test_segment_id": int(segment_id),
+                "sequence": int(sequence),
+                "outcome": outcome,
+                "completed": completed,
+                "timed_out": timed_out,
+                "generated_seen": generated_seen,
+                "acquired_seen": acquired_seen,
+                "target_hub_ticks": target_hub_ticks,
+                "target_local_ticks": target_local_ticks,
+                "pulse_width_us": pick(
+                    "pulse_width_us", ("TTL_PULSE_SCHEDULED",)
+                ),
+                "generated_local_ticks": pick(
+                    "generated_local_ticks", ("TTL_PULSE_GENERATED",)
+                ),
+                "generated_hub_ticks": generated_hub_ticks,
+                "acquired_hub_ticks": acquired_hub_ticks,
+                "timeout_hub_ticks": pick(
+                    "timeout_hub_ticks", ("TTL_PULSE_TIMEOUT",)
+                ),
+                "generation_error_ns": generation_error_ns,
+                "wire_offset_ns": wire_offset_ns,
+                "total_error_ns": total_error_ns,
+                "first_source_line": int(group["source_line"].min()),
+                "last_source_line": int(group["source_line"].max()),
+                "record_count": int(len(group)),
+            }
+        )
+
+    pulses = pd.DataFrame(rows)
+    pulses = pulses.sort_values(
+        ["test_segment_id", "first_source_line"]
+    ).reset_index(drop=True)
+
+    pulses["generation_error_us"] = pulses["generation_error_ns"] / 1000.0
+    pulses["wire_offset_us"] = pulses["wire_offset_ns"] / 1000.0
+    pulses["total_error_us"] = pulses["total_error_ns"] / 1000.0
+    pulses["abs_generation_error_us"] = pulses["generation_error_us"].abs()
+    pulses["abs_wire_offset_us"] = pulses["wire_offset_us"].abs()
+    pulses["abs_total_error_us"] = pulses["total_error_us"].abs()
+
+    pulses["target_time_s"] = pulses["target_hub_ticks"] / hub_hz
+    finite_target = pulses.loc[
+        np.isfinite(pulses["target_time_s"]), "target_time_s"
+    ]
+    pulses["elapsed_s"] = np.nan
+    if not finite_target.empty:
+        pulses.loc[np.isfinite(pulses["target_time_s"]), "elapsed_s"] = (
+            pulses.loc[np.isfinite(pulses["target_time_s"]), "target_time_s"]
+            - float(finite_target.min())
+        )
+
+    tick_to_ns = 1e9 / hub_hz
+    pulses["recomputed_generation_error_ns"] = (
+        pulses["generated_hub_ticks"] - pulses["target_hub_ticks"]
+    ) * tick_to_ns
+    pulses["recomputed_wire_offset_ns"] = (
+        pulses["acquired_hub_ticks"] - pulses["generated_hub_ticks"]
+    ) * tick_to_ns
+    pulses["recomputed_total_error_ns"] = (
+        pulses["acquired_hub_ticks"] - pulses["target_hub_ticks"]
+    ) * tick_to_ns
+    pulses["generation_error_consistency_ns"] = (
+        pulses["generation_error_ns"] - pulses["recomputed_generation_error_ns"]
+    )
+    pulses["wire_offset_consistency_ns"] = (
+        pulses["wire_offset_ns"] - pulses["recomputed_wire_offset_ns"]
+    )
+    pulses["total_error_consistency_ns"] = (
+        pulses["total_error_ns"] - pulses["recomputed_total_error_ns"]
+    )
+
+    return pulses
+
+
 def fit_affine(
     local: np.ndarray,
     hub: np.ndarray,
@@ -1034,6 +1220,63 @@ def create_node_summary(
     return pd.DataFrame(rows)
 
 
+def create_ttl_report_section(ttl_pulses: pd.DataFrame) -> pd.DataFrame:
+    if ttl_pulses.empty:
+        return pd.DataFrame()
+
+    completed = ttl_pulses[ttl_pulses["completed"]].copy()
+    row: dict[str, Any] = {
+        "report_section": "scheduled_ttl",
+        "node": "",
+        "source_type": "scheduled_ttl_test",
+        "path": "galapagos_to_korora",
+        "ttl_test_count": int(len(ttl_pulses)),
+        "ttl_result_count": int(ttl_pulses["completed"].sum()),
+        "ttl_timeout_count": int(ttl_pulses["timed_out"].sum()),
+        "ttl_incomplete_count": int(
+            (~ttl_pulses["completed"] & ~ttl_pulses["timed_out"]).sum()
+        ),
+        "ttl_success_fraction": float(ttl_pulses["completed"].mean()),
+        "ttl_generated_seen_fraction": float(ttl_pulses["generated_seen"].mean()),
+        "ttl_acquired_seen_fraction": float(ttl_pulses["acquired_seen"].mean()),
+    }
+
+    pulse_width = pd.to_numeric(ttl_pulses["pulse_width_us"], errors="coerce")
+    if pulse_width.notna().any():
+        row.update(describe(pulse_width, "ttl_pulse_width_us"))
+
+    if not completed.empty:
+        row.update(describe(completed["generation_error_us"], "ttl_generation_error_us"))
+        row.update(describe(completed["wire_offset_us"], "ttl_wire_offset_us"))
+        row.update(describe(completed["total_error_us"], "ttl_total_error_us"))
+        row.update(
+            describe(completed["abs_total_error_us"], "ttl_abs_total_error_us")
+        )
+        row["ttl_negative_wire_offset_fraction"] = float(
+            (completed["wire_offset_us"] < 0).mean()
+        )
+        row.update(
+            describe(
+                completed["generation_error_consistency_ns"].abs(),
+                "ttl_abs_generation_consistency_ns",
+            )
+        )
+        row.update(
+            describe(
+                completed["wire_offset_consistency_ns"].abs(),
+                "ttl_abs_wire_consistency_ns",
+            )
+        )
+        row.update(
+            describe(
+                completed["total_error_consistency_ns"].abs(),
+                "ttl_abs_total_consistency_ns",
+            )
+        )
+
+    return pd.DataFrame([row])
+
+
 def create_adelie_summary(
     clock: pd.DataFrame,
     rolling: pd.DataFrame,
@@ -1102,6 +1345,7 @@ def create_adelie_summary(
 
 
 def print_summary(summary: pd.DataFrame) -> str:
+    """Print one integrated report containing node and cross-node sections."""
     lines: list[str] = []
 
     common_order = [
@@ -1127,6 +1371,28 @@ def print_summary(summary: pd.DataFrame) -> str:
         "event_abs_error_us_p95",
         "event_transport_age_us_median",
         "event_error_transport_correlation",
+    ]
+
+    ttl_order = [
+        "ttl_test_count",
+        "ttl_result_count",
+        "ttl_timeout_count",
+        "ttl_incomplete_count",
+        "ttl_success_fraction",
+        "ttl_generated_seen_fraction",
+        "ttl_acquired_seen_fraction",
+        "ttl_pulse_width_us_median",
+        "ttl_generation_error_us_median",
+        "ttl_generation_error_us_p95",
+        "ttl_wire_offset_us_median",
+        "ttl_wire_offset_us_p95",
+        "ttl_total_error_us_median",
+        "ttl_total_error_us_p95",
+        "ttl_abs_total_error_us_p95",
+        "ttl_negative_wire_offset_fraction",
+        "ttl_abs_generation_consistency_ns_max",
+        "ttl_abs_wire_consistency_ns_max",
+        "ttl_abs_total_consistency_ns_max",
     ]
 
     adelie_order = [
@@ -1156,8 +1422,26 @@ def print_summary(summary: pd.DataFrame) -> str:
         "command_host_and_ble_us_median",
     ]
 
+    lines.append("=" * 72)
+    lines.append("Korora synchronization and scheduled TTL analysis")
+    lines.append("=" * 72)
+
     for _, row in summary.iterrows():
-        node = str(row["node"])
+        report_section = str(row.get("report_section", "") or "")
+        source_type = str(row.get("source_type", "") or "")
+
+        if report_section == "scheduled_ttl" or source_type == "scheduled_ttl_test":
+            lines.append("")
+            lines.append("=" * 72)
+            lines.append("Scheduled TTL path: Galapagos to Korora")
+            lines.append("=" * 72)
+            for key in ttl_order:
+                if key not in row or pd.isna(row[key]):
+                    continue
+                lines.append(f"{key:46s}: {row[key]}")
+            continue
+
+        node = str(row.get("node", ""))
         lines.append("")
         lines.append("=" * 72)
         lines.append(f"Node: {node}")
@@ -1178,7 +1462,7 @@ def print_summary(summary: pd.DataFrame) -> str:
                 continue
             lines.append(f"{key:46s}: {row[key]}")
 
-    text = "\n".join(lines).lstrip() + "\n"
+    text = "\n".join(lines) + "\n"
     print(text, end="")
     return text
 
@@ -1200,6 +1484,9 @@ def analyse_directory(
     if not events_path.exists():
         events_path = input_dir / "external_events.csv"
     events = derive_events(load_csv(events_path), hub_hz)
+    ttl_pulses = derive_ttl_pulses(
+        load_csv(input_dir / "ttl_records.csv"), hub_hz
+    )
 
     rolling = calculate_rolling_fits(pairs, window_size, hub_hz, local_hz)
     event_alignment = create_event_alignment(events)
@@ -1215,7 +1502,12 @@ def analyse_directory(
     adelie_summary = create_adelie_summary(
         adelie_clock, adelie_rolling, adelie_commands, window_size
     )
-    summary = pd.concat([node_summary, adelie_summary], ignore_index=True, sort=False)
+    ttl_report_section = create_ttl_report_section(ttl_pulses)
+    summary = pd.concat(
+        [node_summary, adelie_summary, ttl_report_section],
+        ignore_index=True,
+        sort=False,
+    )
 
     pairs.to_csv(output_dir / "pairs_derived.csv", index=False)
     sync.to_csv(output_dir / "sync_derived.csv", index=False)
@@ -1224,6 +1516,12 @@ def analyse_directory(
     # Compatibility name.
     events.to_csv(output_dir / "external_events_derived.csv", index=False)
     event_alignment.to_csv(output_dir / "event_alignment.csv", index=False)
+    ttl_pulses.to_csv(output_dir / "ttl_pulses_derived.csv", index=False)
+    # There is deliberately no separate TTL summary.  Cross-node TTL metrics
+    # are part of the single integrated summary.csv and summary.txt report.
+    stale_ttl_summary = output_dir / "ttl_summary.csv"
+    if stale_ttl_summary.exists():
+        stale_ttl_summary.unlink()
     adelie_clock.to_csv(output_dir / "adelie_clock_derived.csv", index=False)
     adelie_rolling.to_csv(output_dir / "adelie_rolling_fits.csv", index=False)
     adelie_commands.to_csv(output_dir / "adelie_commands_derived.csv", index=False)
@@ -1241,6 +1539,7 @@ def analyse_directory(
             "pairs": len(pairs),
             "sync": len(sync),
             "events": len(events),
+            "ttl_pulses": len(ttl_pulses),
             "adelie_clock": len(adelie_clock),
             "adelie_rolling": len(adelie_rolling),
             "adelie_commands": len(adelie_commands),

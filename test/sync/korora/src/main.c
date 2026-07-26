@@ -14,6 +14,13 @@
  *     Both controllers report Bluetooth connection-event anchor timestamps.
  *     galapagos sends its anchor in the same 40-byte frame used by the STM32.
  *     korora matches the 16-bit connection-event counter to its own anchor.
+ *
+ * Every node owns an independent 16-point affine model. All streamed records
+ * put the node name immediately after the record type, for example:
+ *
+ *   SYNC,fairy,...
+ *   SYNC,galapagos,...
+ *   MODEL_RESET,galapagos,...
  */
 
 #include <errno.h>
@@ -63,6 +70,7 @@
 
 #define USER_NODE DT_PATH(zephyr_user)
 #define TIMER_NODE DT_NODELABEL(timer2)
+#define TTL_CAPTURE_TIMER_NODE DT_NODELABEL(timer3)
 #define RTC_NODE DT_NODELABEL(rtc2)
 #define FAIRY_I2C_NODE DT_NODELABEL(i2c0)
 
@@ -70,19 +78,27 @@ BUILD_ASSERT(DT_NODE_HAS_PROP(USER_NODE, sync_gpios),
              "The board overlay must define zephyr,user sync-gpios");
 BUILD_ASSERT(DT_NODE_HAS_PROP(USER_NODE, event_gpios),
              "The board overlay must define zephyr,user event-gpios");
+BUILD_ASSERT(DT_NODE_HAS_PROP(USER_NODE, ttl_input_gpios),
+             "The board overlay must define zephyr,user ttl-input-gpios");
 BUILD_ASSERT(DT_NODE_HAS_STATUS(TIMER_NODE, okay),
              "TIMER2 must be enabled by the board overlay");
+BUILD_ASSERT(DT_NODE_HAS_STATUS(TTL_CAPTURE_TIMER_NODE, okay),
+             "TIMER3 must be enabled by the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_STATUS(RTC_NODE, okay),
              "RTC2 must be enabled by the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_STATUS(FAIRY_I2C_NODE, okay), "I2C0 must be enabled");
 
 #define SYNC_OUTPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, sync_gpios)
 #define EVENT_INPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, event_gpios)
+#define TTL_INPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, ttl_input_gpios)
 #define GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, sync_gpios)
 #define EVENT_GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, event_gpios)
+#define TTL_GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, ttl_input_gpios)
 
 BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, EVENT_GPIOTE_NODE),
              "SYNC and event GPIOs must use the same GPIOTE instance");
+BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, TTL_GPIOTE_NODE),
+             "SYNC and TTL GPIOs must use the same GPIOTE instance");
 
 #define FAIRY_I2C_ADDRESS 0x42U
 
@@ -166,6 +182,7 @@ BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, EVENT_GPIOTE_NODE),
 #define REMOTE_RECORD_SYNC 1U
 #define REMOTE_RECORD_EVENT 2U
 #define REMOTE_RECORD_COMMAND_ACK 3U
+#define REMOTE_RECORD_TTL_GENERATED 4U
 
 #define REMOTE_RECORD_FLAG_HW_OVERCAPTURE BIT(0)
 
@@ -205,6 +222,8 @@ BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, EVENT_GPIOTE_NODE),
 #define EVENT_KIND_COMMAND_ACK_RX "COMMAND_ACK_RX"
 #define EVENT_KIND_COMMAND_RESULT_QUEUE "COMMAND_RESULT_QUEUE"
 #define EVENT_KIND_COMMAND_RESULT_TX "COMMAND_RESULT_TX"
+#define EVENT_KIND_TTL_PULSE_GENERATED "TTL_PULSE_GENERATED"
+#define EVENT_KIND_TTL_PULSE_ACQUIRED "TTL_PULSE_ACQUIRED"
 
 #define EVENT_STATE_LOCAL "LOCAL"
 #define EVENT_STATE_TRACK "TRACK"
@@ -235,10 +254,33 @@ K_SEM_DEFINE(adelie_notify_complete_sem, 0, 1);
 #define BT_UUID_KORORA_SYNC_SERVICE                                            \
   BT_UUID_DECLARE_128(BT_UUID_KORORA_SYNC_SERVICE_VAL)
 
+#define BT_UUID_KORORA_TTL_CONTROL_VAL                                         \
+  BT_UUID_128_ENCODE(0xA88278D1, 0x7009, 0x4BEE, 0xA6F8, 0xE1DC3FF02B92)
+#define BT_UUID_KORORA_TTL_CONTROL                                             \
+  BT_UUID_DECLARE_128(BT_UUID_KORORA_TTL_CONTROL_VAL)
+
 #define BT_UUID_KORORA_ANCHOR_REPORT_VAL                                       \
   BT_UUID_128_ENCODE(0xA88278D2, 0x7009, 0x4BEE, 0xA6F8, 0xE1DC3FF02B92)
 #define BT_UUID_KORORA_ANCHOR_REPORT                                           \
   BT_UUID_DECLARE_128(BT_UUID_KORORA_ANCHOR_REPORT_VAL)
+
+#define TTL_COMMAND_MAGIC 0x544CU
+#define TTL_COMMAND_VERSION 1U
+#define TTL_COMMAND_OPCODE_SCHEDULE 1U
+#define TTL_COMMAND_SIZE 20U
+#define TTL_OFFSET_MAGIC 0U
+#define TTL_OFFSET_VERSION 2U
+#define TTL_OFFSET_OPCODE 3U
+#define TTL_OFFSET_SEQUENCE 4U
+#define TTL_OFFSET_TARGET_TICKS 8U
+#define TTL_OFFSET_PULSE_WIDTH_US 16U
+
+#define TTL_TEST_LEAD_MS 300U
+#define TTL_TEST_PERIOD_MS 1000U
+#define TTL_TEST_PULSE_WIDTH_US 100U
+#define TTL_TEST_TIMEOUT_AFTER_TARGET_MS 250U
+#define TTL_TEST_RETRY_MS 500U
+#define TTL_CAPTURE_QUEUE_DEPTH 8U
 
 #define GALAPAGOS_ANCHOR_CACHE_SIZE 64U
 #define GALAPAGOS_PAIR_QUEUE_DEPTH 16U
@@ -337,7 +379,8 @@ struct galapagos_pair {
 enum galapagos_discovery_stage {
   GALAPAGOS_DISCOVERY_NONE = 0,
   GALAPAGOS_DISCOVERY_SERVICE,
-  GALAPAGOS_DISCOVERY_CHARACTERISTIC,
+  GALAPAGOS_DISCOVERY_TTL_CHARACTERISTIC,
+  GALAPAGOS_DISCOVERY_REPORT_CHARACTERISTIC,
   GALAPAGOS_DISCOVERY_CCC,
 };
 
@@ -346,6 +389,7 @@ struct galapagos_client_state {
   uint8_t conn_index;
   enum galapagos_discovery_stage discovery_stage;
   uint16_t service_end_handle;
+  uint16_t ttl_control_handle;
   uint16_t value_handle;
   struct bt_gatt_discover_params discover;
   struct bt_gatt_subscribe_params subscribe;
@@ -379,9 +423,31 @@ struct korora_event_reference {
   uint64_t hub_ticks;
 };
 
+struct ttl_capture_record {
+  uint32_t sequence;
+  uint64_t target_hub_ticks;
+  uint64_t acquired_hub_ticks;
+};
+
+struct ttl_test_state {
+  bool pending;
+  bool generated_seen;
+  bool generated_logged;
+  bool acquired_seen;
+  bool acquired_logged;
+  bool result_logged;
+  uint32_t sequence;
+  uint64_t target_hub_ticks;
+  uint64_t target_local_ticks;
+  uint64_t generated_local_ticks;
+  int64_t generated_hub_ticks;
+  uint64_t acquired_hub_ticks;
+};
+
 static const struct device *const fairy_i2c = DEVICE_DT_GET(FAIRY_I2C_NODE);
 
 static nrfx_timer_t korora_timer = NRFX_TIMER_INSTANCE(NRF_TIMER2);
+static nrfx_timer_t ttl_capture_timer = NRFX_TIMER_INSTANCE(NRF_TIMER3);
 static nrfx_gpiote_t *const korora_gpiote =
     &GPIOTE_NRFX_INST_BY_NODE(GPIOTE_NODE);
 static nrfx_gppi_handle_t korora_sync_rise_connection;
@@ -389,6 +455,9 @@ static nrfx_gppi_handle_t korora_sync_fall_connection;
 static uint8_t korora_sync_output_channel;
 static nrfx_gppi_handle_t korora_event_capture_connection;
 static uint8_t korora_event_input_channel;
+static nrfx_gppi_handle_t ttl_timer_clear_connection;
+static nrfx_gppi_handle_t ttl_input_capture_connection;
+static uint8_t ttl_input_gpiote_channel;
 
 static atomic_t korora_sync_pulse_count;
 static atomic_t korora_event_sequence;
@@ -403,6 +472,13 @@ static size_t korora_event_cache_next;
 
 K_MSGQ_DEFINE(korora_event_queue, sizeof(struct korora_event_record),
               KORORA_EVENT_QUEUE_DEPTH, 4);
+
+K_MSGQ_DEFINE(ttl_capture_queue, sizeof(struct ttl_capture_record),
+              TTL_CAPTURE_QUEUE_DEPTH, 4);
+
+static struct k_spinlock ttl_test_lock;
+static struct ttl_test_state ttl_test;
+static atomic_t ttl_test_sequence = ATOMIC_INIT(0);
 
 static struct sync_node fairy_node = {
     .name = NODE_FAIRY,
@@ -470,11 +546,19 @@ static void galapagos_scan_restart_work_handler(struct k_work *work);
 static void adelie_request_work_handler(struct k_work *work);
 static void adelie_command_timeout_work_handler(struct k_work *work);
 static void korora_event_work_handler(struct k_work *work);
+static void ttl_capture_work_handler(struct k_work *work);
+static void ttl_result_work_handler(struct k_work *work);
+static void ttl_schedule_work_handler(struct k_work *work);
+static void ttl_timeout_work_handler(struct k_work *work);
+static void ttl_input_gpio_handler(nrfx_gpiote_pin_t pin,
+                                   nrfx_gpiote_trigger_t trigger,
+                                   void *context);
 static void korora_event_gpio_handler(nrfx_gpiote_pin_t pin,
                                       nrfx_gpiote_trigger_t trigger,
                                       void *context);
 static int korora_gpiote_init(void);
 static int korora_event_input_init(void);
+static int korora_ttl_input_init(void);
 
 static uint64_t korora_time_now_ticks(void);
 static uint32_t korora_timer_phase_ticks(void);
@@ -514,6 +598,10 @@ K_WORK_DEFINE(adelie_request_work, adelie_request_work_handler);
 K_WORK_DELAYABLE_DEFINE(adelie_command_timeout_work,
                         adelie_command_timeout_work_handler);
 K_WORK_DEFINE(korora_event_work, korora_event_work_handler);
+K_WORK_DEFINE(ttl_capture_work, ttl_capture_work_handler);
+K_WORK_DEFINE(ttl_result_work, ttl_result_work_handler);
+K_WORK_DELAYABLE_DEFINE(ttl_schedule_work, ttl_schedule_work_handler);
+K_WORK_DELAYABLE_DEFINE(ttl_timeout_work, ttl_timeout_work_handler);
 
 static void adelie_notification_complete(struct bt_conn *conn,
                                          void *user_data) {
@@ -977,7 +1065,8 @@ static bool remote_frame_decode(const uint8_t frame[REMOTE_FRAME_SIZE],
     if ((snapshot->pending_count == 0U) ||
         ((snapshot->record_type != REMOTE_RECORD_SYNC) &&
          (snapshot->record_type != REMOTE_RECORD_EVENT) &&
-         (snapshot->record_type != REMOTE_RECORD_COMMAND_ACK)) ||
+         (snapshot->record_type != REMOTE_RECORD_COMMAND_ACK) &&
+         (snapshot->record_type != REMOTE_RECORD_TTL_GENERATED)) ||
         (snapshot->snapshot_ticks < snapshot->capture_ticks)) {
       return false;
     }
@@ -1936,6 +2025,8 @@ static bool galapagos_anchor_to_korora_ticks(uint64_t controller_ticks,
 
 static const struct bt_uuid *const galapagos_sync_service_uuid =
     BT_UUID_KORORA_SYNC_SERVICE;
+static const struct bt_uuid *const galapagos_ttl_control_uuid =
+    BT_UUID_KORORA_TTL_CONTROL;
 static const struct bt_uuid *const galapagos_anchor_report_uuid =
     BT_UUID_KORORA_ANCHOR_REPORT;
 
@@ -2133,6 +2224,67 @@ static void galapagos_pair_work_handler(struct k_work *work) {
   }
 }
 
+static bool galapagos_model_inverse(uint64_t target_hub_ticks,
+                                    uint64_t *local_ticks_out) {
+  bool valid = false;
+
+  k_mutex_lock(&galapagos_state_mutex, K_FOREVER);
+
+  if (galapagos_node.model.valid && (galapagos_node.model.slope > 0.0)) {
+    const double local = (double)galapagos_node.model.local_reference +
+                         ((double)target_hub_ticks -
+                          galapagos_node.model.hub_at_local_reference) /
+                             galapagos_node.model.slope;
+
+    if ((local >= 0.0) && (local <= (double)UINT64_MAX)) {
+      uint64_t ticks = (uint64_t)math_round_i64(local);
+
+      /* GRTC has 1 us resolution, represented as 16 nominal ticks. */
+      ticks = ((ticks + 8ULL) / 16ULL) * 16ULL;
+      *local_ticks_out = ticks;
+      valid = true;
+    }
+  }
+
+  k_mutex_unlock(&galapagos_state_mutex);
+  return valid;
+}
+
+static int64_t galapagos_local_to_hub(uint64_t local_ticks, bool *valid_out) {
+  int64_t converted = -1;
+  bool valid = false;
+
+  k_mutex_lock(&galapagos_state_mutex, K_FOREVER);
+
+  if (galapagos_node.model.valid) {
+    converted =
+        math_round_i64(clock_model_predict(&galapagos_node.model, local_ticks));
+    valid = converted >= 0;
+  }
+
+  k_mutex_unlock(&galapagos_state_mutex);
+  *valid_out = valid;
+  return converted;
+}
+
+static void galapagos_ttl_generated(const struct remote_frame *frame) {
+  const uint32_t sequence = frame->auxiliary;
+  bool model_valid = false;
+  const int64_t generated_hub_ticks =
+      galapagos_local_to_hub(frame->capture_ticks, &model_valid);
+
+  const k_spinlock_key_t key = k_spin_lock(&ttl_test_lock);
+
+  if (ttl_test.pending && (ttl_test.sequence == sequence)) {
+    ttl_test.generated_seen = true;
+    ttl_test.generated_local_ticks = frame->capture_ticks;
+    ttl_test.generated_hub_ticks = model_valid ? generated_hub_ticks : -1;
+  }
+
+  k_spin_unlock(&ttl_test_lock, key);
+  (void)k_work_submit(&ttl_result_work);
+}
+
 static uint8_t
 galapagos_notification_callback(struct bt_conn *conn,
                                 struct bt_gatt_subscribe_params *params,
@@ -2169,6 +2321,11 @@ galapagos_notification_callback(struct bt_conn *conn,
   }
 
   if (atomic_get(&galapagos_connection_active) == 0) {
+    return BT_GATT_ITER_CONTINUE;
+  }
+
+  if (snapshot.record_type == REMOTE_RECORD_TTL_GENERATED) {
+    galapagos_ttl_generated(&snapshot);
     return BT_GATT_ITER_CONTINUE;
   }
 
@@ -2219,8 +2376,10 @@ static int galapagos_subscribe(struct bt_conn *conn, uint16_t ccc_handle) {
     return error;
   }
 
-  printk("GALAPAGOS_SUBSCRIBED,%s,%u,%u\n", NODE_GALAPAGOS,
-         galapagos_client.value_handle, ccc_handle);
+  printk("GALAPAGOS_SUBSCRIBED,%s,%u,%u,ttl_control=%u\n", NODE_GALAPAGOS,
+         galapagos_client.value_handle, ccc_handle,
+         galapagos_client.ttl_control_handle);
+  (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
   return 0;
 }
 
@@ -2242,9 +2401,9 @@ galapagos_discovery_callback(struct bt_conn *conn,
     const struct bt_gatt_service_val *service = attr->user_data;
 
     galapagos_client.service_end_handle = service->end_handle;
-    galapagos_client.discovery_stage = GALAPAGOS_DISCOVERY_CHARACTERISTIC;
+    galapagos_client.discovery_stage = GALAPAGOS_DISCOVERY_TTL_CHARACTERISTIC;
 
-    params->uuid = galapagos_anchor_report_uuid;
+    params->uuid = galapagos_ttl_control_uuid;
     params->start_handle = attr->handle + 1U;
     params->end_handle = galapagos_client.service_end_handle;
     params->type = BT_GATT_DISCOVER_CHARACTERISTIC;
@@ -2256,7 +2415,27 @@ galapagos_discovery_callback(struct bt_conn *conn,
     return BT_GATT_ITER_STOP;
   }
 
-  case GALAPAGOS_DISCOVERY_CHARACTERISTIC: {
+  case GALAPAGOS_DISCOVERY_TTL_CHARACTERISTIC: {
+    const struct bt_gatt_chrc *characteristic = attr->user_data;
+
+    galapagos_client.ttl_control_handle = characteristic->value_handle;
+    galapagos_client.discovery_stage =
+        GALAPAGOS_DISCOVERY_REPORT_CHARACTERISTIC;
+
+    params->uuid = galapagos_anchor_report_uuid;
+    params->start_handle = characteristic->value_handle + 1U;
+    params->end_handle = galapagos_client.service_end_handle;
+    params->type = BT_GATT_DISCOVER_CHARACTERISTIC;
+
+    error = bt_gatt_discover(conn, params);
+    if (error != 0) {
+      printk("GALAPAGOS_DISCOVERY_ERROR,%s,REPORT_CHAR,%d\n", NODE_GALAPAGOS,
+             error);
+    }
+    return BT_GATT_ITER_STOP;
+  }
+
+  case GALAPAGOS_DISCOVERY_REPORT_CHARACTERISTIC: {
     const struct bt_gatt_chrc *characteristic = attr->user_data;
 
     galapagos_client.value_handle = characteristic->value_handle;
@@ -2455,6 +2634,7 @@ static void bluetooth_connected(struct bt_conn *conn, uint8_t error) {
   galapagos_client.conn_index = bt_conn_index(conn);
   galapagos_client.discovery_stage = GALAPAGOS_DISCOVERY_NONE;
   galapagos_client.service_end_handle = 0U;
+  galapagos_client.ttl_control_handle = 0U;
   galapagos_client.value_handle = 0U;
 
   (void)atomic_inc(&galapagos_connection_generation);
@@ -2546,6 +2726,13 @@ static void bluetooth_disconnected(struct bt_conn *conn, uint8_t reason) {
   memset(&galapagos_client.subscribe, 0, sizeof(galapagos_client.subscribe));
   memset(&galapagos_client.exchange, 0, sizeof(galapagos_client.exchange));
   galapagos_client.discovery_stage = GALAPAGOS_DISCOVERY_NONE;
+  galapagos_client.ttl_control_handle = 0U;
+  (void)k_work_cancel_delayable(&ttl_schedule_work);
+  (void)k_work_cancel_delayable(&ttl_timeout_work);
+
+  const k_spinlock_key_t ttl_key = k_spin_lock(&ttl_test_lock);
+  memset(&ttl_test, 0, sizeof(ttl_test));
+  k_spin_unlock(&ttl_test_lock, ttl_key);
 
   galapagos_anchor_cache_reset();
   sync_node_reset(&galapagos_node, "galapagos_disconnect");
@@ -2824,6 +3011,355 @@ static int korora_event_input_init(void) {
   nrfx_gppi_conn_enable(korora_event_capture_connection);
   nrfx_gpiote_trigger_enable(korora_gpiote, EVENT_INPUT_PIN, true);
 
+  return 0;
+}
+
+static void ttl_capture_timer_event_handler(nrf_timer_event_t event_type,
+                                            void *context) {
+  ARG_UNUSED(event_type);
+  ARG_UNUSED(context);
+}
+
+static void ttl_capture_timer_irq_wrapper(const void *argument) {
+  nrfx_timer_irq_handler((const nrfx_timer_t *)argument);
+}
+
+static void ttl_input_gpio_handler(nrfx_gpiote_pin_t pin,
+                                   nrfx_gpiote_trigger_t trigger,
+                                   void *context) {
+  ARG_UNUSED(pin);
+  ARG_UNUSED(trigger);
+  ARG_UNUSED(context);
+
+  const uint32_t captured_phase =
+      nrf_timer_cc_get(ttl_capture_timer.p_reg, NRF_TIMER_CC_CHANNEL0);
+  const uint64_t acquired_hub_ticks =
+      korora_event_ticks_from_phase(captured_phase);
+
+  struct ttl_capture_record record = {0};
+  bool accepted = false;
+
+  const k_spinlock_key_t key = k_spin_lock(&ttl_test_lock);
+
+  if (ttl_test.pending && !ttl_test.acquired_seen) {
+    ttl_test.acquired_seen = true;
+    ttl_test.acquired_hub_ticks = acquired_hub_ticks;
+    record.sequence = ttl_test.sequence;
+    record.target_hub_ticks = ttl_test.target_hub_ticks;
+    record.acquired_hub_ticks = acquired_hub_ticks;
+    accepted = true;
+  }
+
+  k_spin_unlock(&ttl_test_lock, key);
+
+  if (!accepted) {
+    return;
+  }
+
+  if (k_msgq_put(&ttl_capture_queue, &record, K_NO_WAIT) != 0) {
+    return;
+  }
+
+  (void)k_work_submit(&ttl_capture_work);
+}
+
+static void ttl_capture_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  struct ttl_capture_record record;
+
+  while (k_msgq_get(&ttl_capture_queue, &record, K_NO_WAIT) == 0) {
+    (void)k_work_submit(&ttl_result_work);
+  }
+}
+
+static void ttl_result_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  bool log_generated = false;
+  bool log_acquired = false;
+  bool log_result = false;
+  struct ttl_test_state snapshot = {0};
+
+  const k_spinlock_key_t key = k_spin_lock(&ttl_test_lock);
+
+  if (!ttl_test.pending) {
+    k_spin_unlock(&ttl_test_lock, key);
+    return;
+  }
+
+  if (ttl_test.generated_seen && !ttl_test.generated_logged) {
+    ttl_test.generated_logged = true;
+    log_generated = true;
+  }
+
+  /*
+   * The physical input normally arrives before the generated record returns
+   * over Bluetooth. Buffer it so the serial stream presents the logical order:
+   * generated first, acquired second, then the combined result.
+   */
+  if (ttl_test.generated_seen && ttl_test.acquired_seen &&
+      !ttl_test.acquired_logged) {
+    ttl_test.acquired_logged = true;
+    log_acquired = true;
+  }
+
+  if (ttl_test.generated_seen && ttl_test.acquired_seen &&
+      !ttl_test.result_logged) {
+    ttl_test.result_logged = true;
+    log_result = true;
+  }
+
+  snapshot = ttl_test;
+
+  if (log_result) {
+    ttl_test.pending = false;
+  }
+
+  k_spin_unlock(&ttl_test_lock, key);
+
+  const int64_t total_error_ticks =
+      (int64_t)snapshot.acquired_hub_ticks - (int64_t)snapshot.target_hub_ticks;
+
+  if (log_generated) {
+    const int64_t generation_error_ticks =
+        (snapshot.generated_hub_ticks >= 0)
+            ? snapshot.generated_hub_ticks - (int64_t)snapshot.target_hub_ticks
+            : 0;
+
+    printk("TTL_PULSE_GENERATED,%s,%u,%llu,%lld,%llu,%lld\n", NODE_GALAPAGOS,
+           snapshot.sequence,
+           (unsigned long long)snapshot.generated_local_ticks,
+           (long long)snapshot.generated_hub_ticks,
+           (unsigned long long)snapshot.target_hub_ticks,
+           (long long)((snapshot.generated_hub_ticks >= 0)
+                           ? ticks_to_ns((double)generation_error_ticks)
+                           : INT64_MIN));
+  }
+
+  if (log_acquired) {
+    printk("TTL_PULSE_ACQUIRED,%s,%u,%llu,%llu,%lld\n", NODE_KORORA,
+           snapshot.sequence, (unsigned long long)snapshot.acquired_hub_ticks,
+           (unsigned long long)snapshot.target_hub_ticks,
+           (long long)ticks_to_ns((double)total_error_ticks));
+  }
+
+  if (log_result) {
+    const int64_t generation_error_ticks =
+        (snapshot.generated_hub_ticks >= 0)
+            ? snapshot.generated_hub_ticks - (int64_t)snapshot.target_hub_ticks
+            : 0;
+    const int64_t wire_offset_ticks =
+        (snapshot.generated_hub_ticks >= 0)
+            ? (int64_t)snapshot.acquired_hub_ticks -
+                  snapshot.generated_hub_ticks
+            : 0;
+
+    printk("TTL_PULSE_RESULT,%u,%llu,%llu,%lld,%llu,%lld,%lld,%lld\n",
+           snapshot.sequence, (unsigned long long)snapshot.target_hub_ticks,
+           (unsigned long long)snapshot.target_local_ticks,
+           (long long)snapshot.generated_hub_ticks,
+           (unsigned long long)snapshot.acquired_hub_ticks,
+           (long long)((snapshot.generated_hub_ticks >= 0)
+                           ? ticks_to_ns((double)generation_error_ticks)
+                           : INT64_MIN),
+           (long long)((snapshot.generated_hub_ticks >= 0)
+                           ? ticks_to_ns((double)wire_offset_ticks)
+                           : INT64_MIN),
+           (long long)ticks_to_ns((double)total_error_ticks));
+
+    (void)k_work_cancel_delayable(&ttl_timeout_work);
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_PERIOD_MS));
+  }
+}
+
+static void ttl_schedule_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  if ((atomic_get(&galapagos_connection_active) == 0) ||
+      (galapagos_client.ttl_control_handle == 0U)) {
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
+    return;
+  }
+
+  const k_spinlock_key_t state_key = k_spin_lock(&ttl_test_lock);
+  const bool busy = ttl_test.pending;
+  k_spin_unlock(&ttl_test_lock, state_key);
+
+  if (busy) {
+    return;
+  }
+
+  uint64_t target_local_ticks;
+  const uint64_t requested_hub_ticks =
+      korora_time_now_ticks() +
+      ((uint64_t)TTL_TEST_LEAD_MS * KORORA_TIMER_HZ / 1000ULL);
+
+  if (!galapagos_model_inverse(requested_hub_ticks, &target_local_ticks)) {
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
+    return;
+  }
+
+  bool model_valid = false;
+  const int64_t quantized_target_hub =
+      galapagos_local_to_hub(target_local_ticks, &model_valid);
+
+  if (!model_valid || (quantized_target_hub < 0)) {
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
+    return;
+  }
+
+  const uint32_t sequence = (uint32_t)atomic_inc(&ttl_test_sequence) + 1U;
+
+  uint8_t command[TTL_COMMAND_SIZE] = {0};
+  sys_put_le16(TTL_COMMAND_MAGIC, &command[TTL_OFFSET_MAGIC]);
+  command[TTL_OFFSET_VERSION] = TTL_COMMAND_VERSION;
+  command[TTL_OFFSET_OPCODE] = TTL_COMMAND_OPCODE_SCHEDULE;
+  sys_put_le32(sequence, &command[TTL_OFFSET_SEQUENCE]);
+  sys_put_le64(target_local_ticks, &command[TTL_OFFSET_TARGET_TICKS]);
+  sys_put_le32(TTL_TEST_PULSE_WIDTH_US, &command[TTL_OFFSET_PULSE_WIDTH_US]);
+
+  struct bt_conn *conn = NULL;
+
+  k_mutex_lock(&galapagos_state_mutex, K_FOREVER);
+  if (galapagos_client.conn != NULL) {
+    conn = bt_conn_ref(galapagos_client.conn);
+  }
+  k_mutex_unlock(&galapagos_state_mutex);
+
+  if (conn == NULL) {
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
+    return;
+  }
+
+  const k_spinlock_key_t key = k_spin_lock(&ttl_test_lock);
+  memset(&ttl_test, 0, sizeof(ttl_test));
+  ttl_test.pending = true;
+  ttl_test.sequence = sequence;
+  ttl_test.target_hub_ticks = (uint64_t)quantized_target_hub;
+  ttl_test.target_local_ticks = target_local_ticks;
+  ttl_test.generated_hub_ticks = -1;
+  k_spin_unlock(&ttl_test_lock, key);
+
+  const int error =
+      bt_gatt_write_without_response(conn, galapagos_client.ttl_control_handle,
+                                     command, sizeof(command), false);
+  bt_conn_unref(conn);
+
+  if (error != 0) {
+    const k_spinlock_key_t clear_key = k_spin_lock(&ttl_test_lock);
+    memset(&ttl_test, 0, sizeof(ttl_test));
+    k_spin_unlock(&ttl_test_lock, clear_key);
+
+    stream_log_fault(NODE_GALAPAGOS, "TTL_WRITE", error, sequence);
+    (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_RETRY_MS));
+    return;
+  }
+
+  printk("TTL_PULSE_SCHEDULED,%s,%u,%llu,%llu,%u\n", NODE_KORORA, sequence,
+         (unsigned long long)quantized_target_hub,
+         (unsigned long long)target_local_ticks, TTL_TEST_PULSE_WIDTH_US);
+
+  (void)k_work_reschedule(
+      &ttl_timeout_work,
+      K_MSEC(TTL_TEST_LEAD_MS + TTL_TEST_TIMEOUT_AFTER_TARGET_MS));
+}
+
+static void ttl_timeout_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+
+  struct ttl_test_state snapshot = {0};
+  bool timed_out = false;
+
+  const k_spinlock_key_t key = k_spin_lock(&ttl_test_lock);
+
+  if (ttl_test.pending) {
+    snapshot = ttl_test;
+    memset(&ttl_test, 0, sizeof(ttl_test));
+    timed_out = true;
+  }
+
+  k_spin_unlock(&ttl_test_lock, key);
+
+  if (timed_out) {
+    printk("TTL_PULSE_TIMEOUT,%u,%llu,%llu,%u,%u\n", snapshot.sequence,
+           (unsigned long long)snapshot.target_hub_ticks,
+           (unsigned long long)korora_time_now_ticks(),
+           snapshot.generated_seen ? 1U : 0U, snapshot.acquired_seen ? 1U : 0U);
+  }
+
+  (void)k_work_reschedule(&ttl_schedule_work, K_MSEC(TTL_TEST_PERIOD_MS));
+}
+
+static int korora_ttl_input_init(void) {
+  IRQ_CONNECT(DT_IRQN(TTL_CAPTURE_TIMER_NODE),
+              DT_IRQ(TTL_CAPTURE_TIMER_NODE, priority),
+              ttl_capture_timer_irq_wrapper, &ttl_capture_timer, 0);
+
+  nrfx_timer_config_t timer_config = NRFX_TIMER_DEFAULT_CONFIG(KORORA_TIMER_HZ);
+  timer_config.bit_width = NRF_TIMER_BIT_WIDTH_32;
+  timer_config.interrupt_priority = DT_IRQ(TTL_CAPTURE_TIMER_NODE, priority);
+
+  int error = nrfx_timer_init(&ttl_capture_timer, &timer_config,
+                              ttl_capture_timer_event_handler);
+  if (error != 0) {
+    return error;
+  }
+
+  nrfx_timer_clear(&ttl_capture_timer);
+  nrfx_timer_enable(&ttl_capture_timer);
+
+  /* TIMER3 is phase aligned to TIMER2 at every 4 Hz TIMER2 boundary. */
+  error = nrfx_gppi_conn_alloc(
+      nrfx_timer_compare_event_address_get(&korora_timer,
+                                           NRF_TIMER_CC_CHANNEL0),
+      nrf_timer_task_address_get(ttl_capture_timer.p_reg, NRF_TIMER_TASK_CLEAR),
+      &ttl_timer_clear_connection);
+  if (error != 0) {
+    return error;
+  }
+  nrfx_gppi_conn_enable(ttl_timer_clear_connection);
+
+  error = nrfx_gpiote_channel_alloc(korora_gpiote, &ttl_input_gpiote_channel);
+  if (error != 0) {
+    return error;
+  }
+
+  static const nrf_gpio_pin_pull_t pull = NRF_GPIO_PIN_PULLDOWN;
+  const nrfx_gpiote_trigger_config_t trigger_config = {
+      .trigger = NRFX_GPIOTE_TRIGGER_LOTOHI,
+      .p_in_channel = &ttl_input_gpiote_channel,
+  };
+  const nrfx_gpiote_handler_config_t handler_config = {
+      .handler = ttl_input_gpio_handler,
+      .p_context = NULL,
+  };
+  const nrfx_gpiote_input_pin_config_t input_config = {
+      .p_pull_config = &pull,
+      .p_trigger_config = &trigger_config,
+      .p_handler_config = &handler_config,
+  };
+
+  error =
+      nrfx_gpiote_input_configure(korora_gpiote, TTL_INPUT_PIN, &input_config);
+  if (error != 0) {
+    return error;
+  }
+
+  error = nrfx_gppi_conn_alloc(
+      nrfx_gpiote_in_event_address_get(korora_gpiote, TTL_INPUT_PIN),
+      nrf_timer_task_address_get(ttl_capture_timer.p_reg,
+                                 NRF_TIMER_TASK_CAPTURE0),
+      &ttl_input_capture_connection);
+  if (error != 0) {
+    return error;
+  }
+
+  nrfx_gppi_conn_enable(ttl_input_capture_connection);
+  nrfx_gpiote_trigger_enable(korora_gpiote, TTL_INPUT_PIN, true);
+
+  printk("TTL_INPUT_READY,%s,pin=%u,timer=3,cc=0\n", NODE_KORORA,
+         (unsigned int)TTL_INPUT_PIN);
   return 0;
 }
 
@@ -3132,6 +3668,19 @@ int main(void) {
          "converted_hub_ticks,reference_hub_ticks,error_ns\n");
   printk("# LINK,node,transport,role,state,peer,interval_us,reason\n");
   printk("# FAULT,node,category,code,value\n");
+  printk("# "
+         "TTL_PULSE_SCHEDULED,node,sequence,target_hub_ticks,target_galapagos_"
+         "ticks,pulse_width_us\n");
+  printk("# "
+         "TTL_PULSE_GENERATED,node,sequence,generated_local_ticks,generated_"
+         "hub_ticks,target_hub_ticks,generation_error_ns\n");
+  printk("# "
+         "TTL_PULSE_ACQUIRED,node,sequence,acquired_hub_ticks,target_hub_ticks,"
+         "total_error_ns\n");
+  printk("# "
+         "TTL_PULSE_RESULT,sequence,target_hub_ticks,target_galapagos_ticks,"
+         "generated_hub_ticks,acquired_hub_ticks,generation_error_ns,wire_"
+         "offset_ns,total_error_ns\n");
 
   if (!device_is_ready(fairy_i2c)) {
     stream_log_fault(NODE_FAIRY, "I2C_NOT_READY", -ENODEV, 0ULL);
@@ -3181,12 +3730,22 @@ int main(void) {
     return 0;
   }
 
+  error = korora_ttl_input_init();
+  if (error != 0) {
+    stream_log_fault(NODE_KORORA, "TTL_INPUT_INIT", error, TTL_INPUT_PIN);
+    return 0;
+  }
+
   (void)k_work_reschedule(&fairy_poll_work, K_NO_WAIT);
 
   printk("READY,%s,%u,%u,0x%02x,%u,%lld,%s,%u\n", NODE_KORORA, KORORA_TIMER_HZ,
          KORORA_SYNC_PERIOD_TICKS, FAIRY_I2C_ADDRESS, CLOCK_MODEL_WINDOW_SIZE,
          (long long)math_round_i64(CLOCK_MODEL_MAX_SKEW_PPM),
          GALAPAGOS_ADVERTISED_NAME, EVENT_INPUT_PIN);
+  printk(
+      "TTL_TEST_CONFIG,lead_ms=%u,period_ms=%u,width_us=%u,ttl_input_pin=%u\n",
+      TTL_TEST_LEAD_MS, TTL_TEST_PERIOD_MS, TTL_TEST_PULSE_WIDTH_US,
+      (unsigned int)TTL_INPUT_PIN);
 
   while (true) {
     k_sleep(K_SECONDS(60));
