@@ -6,7 +6,7 @@
  *
  * Concurrent timing paths:
  *
- *  1. fairy (STM32G071 over I2C + hardware SYNC GPIO)
+ *  1. fairy (STM32G071 over half-duplex RS-485 + hardware SYNC GPIO)
  *     TIMER2 COMPARE0 -> PPI -> GPIOTE SET
  *     TIMER2 COMPARE1 -> PPI -> GPIOTE CLR
  *
@@ -37,7 +37,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
-#include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/irq.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net_buf.h>
@@ -52,6 +52,7 @@
 #include <bluetooth/hci_vs_sdc.h>
 #include <gpiote_nrfx.h>
 #include <hal/nrf_clock.h>
+#include <hal/nrf_gpio.h>
 #include <hal/nrf_rtc.h>
 #include <hal/nrf_timer.h>
 #include <helpers/nrfx_gppi.h>
@@ -61,6 +62,9 @@
 #include <soc.h>
 
 #include "adelie_protocol.h"
+
+/* Keep Adelie protocol compatibility while making Korora transport-neutral. */
+#define ADELIE_STATUS_FAIRY_TRANSPORT_FAILED ADELIE_STATUS_I2C_WRITE_FAILED
 
 #define NODE_KORORA "korora"
 #define NODE_FAIRY "fairy"
@@ -72,7 +76,7 @@
 #define TIMER_NODE DT_NODELABEL(timer2)
 #define TTL_CAPTURE_TIMER_NODE DT_NODELABEL(timer3)
 #define RTC_NODE DT_NODELABEL(rtc2)
-#define FAIRY_I2C_NODE DT_NODELABEL(i2c0)
+#define FAIRY_UART_NODE DT_NODELABEL(uart1)
 
 BUILD_ASSERT(DT_NODE_HAS_PROP(USER_NODE, sync_gpios),
              "The board overlay must define zephyr,user sync-gpios");
@@ -86,11 +90,15 @@ BUILD_ASSERT(DT_NODE_HAS_STATUS(TTL_CAPTURE_TIMER_NODE, okay),
              "TIMER3 must be enabled by the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_STATUS(RTC_NODE, okay),
              "RTC2 must be enabled by the board overlay");
-BUILD_ASSERT(DT_NODE_HAS_STATUS(FAIRY_I2C_NODE, okay), "I2C0 must be enabled");
+BUILD_ASSERT(DT_NODE_HAS_PROP(USER_NODE, fairy_rs485_de_gpios),
+             "The board overlay must define zephyr,user fairy-rs485-de-gpios");
+BUILD_ASSERT(DT_NODE_HAS_STATUS(FAIRY_UART_NODE, okay),
+             "UARTE1 must be enabled by the board overlay");
 
 #define SYNC_OUTPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, sync_gpios)
 #define EVENT_INPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, event_gpios)
 #define TTL_INPUT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, ttl_input_gpios)
+#define FAIRY_RS485_DE_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, fairy_rs485_de_gpios)
 #define GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, sync_gpios)
 #define EVENT_GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, event_gpios)
 #define TTL_GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, ttl_input_gpios)
@@ -100,7 +108,26 @@ BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, EVENT_GPIOTE_NODE),
 BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, TTL_GPIOTE_NODE),
              "SYNC and TTL GPIOs must use the same GPIOTE instance");
 
-#define FAIRY_I2C_ADDRESS 0x42U
+#define FAIRY_RS485_ADDRESS 1U
+#define FAIRY_RS485_BAUD 460800U
+
+#define FAIRY_RS485_REQUEST_MAGIC_0 0xA6U
+#define FAIRY_RS485_REQUEST_MAGIC_1 0x5AU
+#define FAIRY_RS485_RESPONSE_MAGIC_0 0xA6U
+#define FAIRY_RS485_RESPONSE_MAGIC_1 0xA5U
+#define FAIRY_RS485_OPCODE_POLL 0x10U
+#define FAIRY_RS485_OPCODE_COMMAND 0x11U
+#define FAIRY_RS485_RESPONSE_BIT 0x80U
+#define FAIRY_RS485_NO_ACK 0xFFU
+#define FAIRY_RS485_REQUEST_SIZE 8U
+#define FAIRY_RS485_COMMAND_RESPONSE_SIZE 8U
+#define FAIRY_RS485_POLL_RESPONSE_SIZE (6U + REMOTE_FRAME_SIZE + 2U)
+#define FAIRY_RS485_MAX_RESPONSE_SIZE FAIRY_RS485_POLL_RESPONSE_SIZE
+#define FAIRY_RS485_RETRY_COUNT 2U
+#define FAIRY_RS485_TX_TIMEOUT_US 5000
+#define FAIRY_RS485_RX_IDLE_TIMEOUT_US 1500
+#define FAIRY_RS485_TRANSACTION_TIMEOUT_MS 12
+#define FAIRY_RS485_RX_DISABLE_TIMEOUT_MS 2
 
 #define KORORA_TIMER_HZ 16000000U
 #define FAIRY_TIMER_NOMINAL_HZ 16000000ULL
@@ -121,8 +148,8 @@ BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, TTL_GPIOTE_NODE),
    FAIRY_LOCAL_ACCEPTANCE_MARGIN_TICKS)
 
 #define FAIRY_PAIRING_MAX_RATE_ERROR_PPM 25000ULL
-#define FAIRY_PAIRING_MAX_I2C_READ_TICKS 320000ULL /* 20 ms */
-#define FAIRY_PAIRING_AGE_MARGIN_TICKS 32000ULL    /* 2 ms */
+#define FAIRY_PAIRING_MAX_TRANSPORT_TICKS 320000ULL /* 20 ms */
+#define FAIRY_PAIRING_AGE_MARGIN_TICKS 32000ULL     /* 2 ms */
 
 #define CLOCK_MODEL_WINDOW_SIZE 16U
 
@@ -151,7 +178,7 @@ BUILD_ASSERT(DT_SAME_NODE(GPIOTE_NODE, TTL_GPIOTE_NODE),
 #define FAIRY_MAX_TIMEOUTS_IN_HISTORY 5U
 #define FAIRY_MAX_CONSECUTIVE_TIMEOUTS 3U
 #define FAIRY_MAX_CONSECUTIVE_BAD_WINDOWS 3U
-#define FAIRY_MAX_CONSECUTIVE_I2C_ERRORS 3U
+#define FAIRY_MAX_CONSECUTIVE_TRANSPORT_ERRORS 3U
 
 /* Exact fairy frame layout, reused by BLE notifications. */
 #define REMOTE_FRAME_MAGIC 0xA5U
@@ -295,9 +322,10 @@ BUILD_ASSERT(KORORA_SYNC_PULSE_WIDTH_TICKS < FAIRY_SYNC_ACCEPTANCE_WINDOW_TICKS,
              "SYNC pulse must end inside the acceptance window");
 BUILD_ASSERT(FAIRY_SYNC_ACCEPTANCE_WINDOW_TICKS < FAIRY_FINAL_DRAIN_PHASE_TICKS,
              "Dead-zone polling must remain possible");
-BUILD_ASSERT(FAIRY_FINAL_DRAIN_GUARD_TICKS > (FAIRY_PAIRING_MAX_I2C_READ_TICKS +
-                                              FAIRY_PAIRING_AGE_MARGIN_TICKS),
-             "Final guard must exceed I2C allowance");
+BUILD_ASSERT(FAIRY_FINAL_DRAIN_GUARD_TICKS >
+                 (FAIRY_PAIRING_MAX_TRANSPORT_TICKS +
+                  FAIRY_PAIRING_AGE_MARGIN_TICKS),
+             "Final guard must exceed transport allowance");
 BUILD_ASSERT(CLOCK_MODEL_WINDOW_SIZE >= 2U,
              "At least two points are required for a fit");
 BUILD_ASSERT(REMOTE_FRAME_SIZE == (REMOTE_OFFSET_CRC + 4U),
@@ -410,7 +438,7 @@ struct adelie_command_state {
   uint8_t fairy_token;
   uint64_t deadline_ticks;
   uint64_t korora_rx_ticks;
-  uint64_t i2c_start_ticks;
+  uint64_t fairy_tx_start_ticks;
 };
 
 struct korora_event_record {
@@ -444,7 +472,19 @@ struct ttl_test_state {
   uint64_t acquired_hub_ticks;
 };
 
-static const struct device *const fairy_i2c = DEVICE_DT_GET(FAIRY_I2C_NODE);
+static const struct device *const fairy_uart = DEVICE_DT_GET(FAIRY_UART_NODE);
+
+K_MUTEX_DEFINE(fairy_rs485_mutex);
+K_SEM_DEFINE(fairy_rs485_tx_done_sem, 0, 1);
+K_SEM_DEFINE(fairy_rs485_rx_done_sem, 0, 1);
+K_SEM_DEFINE(fairy_rs485_rx_disabled_sem, 0, 1);
+
+static volatile size_t fairy_rs485_expected_rx_length;
+static volatile size_t fairy_rs485_received_length;
+static volatile int fairy_rs485_async_error;
+static uint8_t fairy_rs485_next_bus_sequence;
+static bool fairy_rs485_have_poll_ack;
+static uint8_t fairy_rs485_poll_ack_sequence;
 
 static nrfx_timer_t korora_timer = NRFX_TIMER_INSTANCE(NRF_TIMER2);
 static nrfx_timer_t ttl_capture_timer = NRFX_TIMER_INSTANCE(NRF_TIMER3);
@@ -506,7 +546,7 @@ static size_t fairy_timeout_history_count;
 static unsigned int fairy_timeout_history_sum;
 static unsigned int fairy_consecutive_timeouts;
 static unsigned int fairy_consecutive_bad_windows;
-static unsigned int fairy_consecutive_i2c_errors;
+static unsigned int fairy_consecutive_transport_errors;
 
 static struct onoff_client korora_hfclk_client;
 static bool korora_hfclk_reserved;
@@ -1418,20 +1458,238 @@ static void fairy_schedule_next_poll(uint32_t current_phase,
   korora_schedule_at_phase(&fairy_poll_work, target_phase);
 }
 
-static int fairy_write_command(uint8_t command) {
-  return i2c_write(fairy_i2c, &command, 1U, FAIRY_I2C_ADDRESS);
+static void fairy_rs485_uart_callback(const struct device *device,
+                                      struct uart_event *event,
+                                      void *user_data) {
+  ARG_UNUSED(device);
+  ARG_UNUSED(user_data);
+
+  switch (event->type) {
+  case UART_TX_DONE:
+    /* Release the half-duplex bus at the physical end of transmission. */
+    nrf_gpio_pin_clear(FAIRY_RS485_DE_PIN);
+    k_sem_give(&fairy_rs485_tx_done_sem);
+    break;
+
+  case UART_TX_ABORTED:
+    nrf_gpio_pin_clear(FAIRY_RS485_DE_PIN);
+    fairy_rs485_async_error = -EIO;
+    k_sem_give(&fairy_rs485_tx_done_sem);
+    break;
+
+  case UART_RX_RDY: {
+    const size_t end = event->data.rx.offset + event->data.rx.len;
+    if (end > fairy_rs485_received_length) {
+      fairy_rs485_received_length = end;
+    }
+    if (fairy_rs485_received_length >= fairy_rs485_expected_rx_length) {
+      k_sem_give(&fairy_rs485_rx_done_sem);
+    }
+    break;
+  }
+
+  case UART_RX_STOPPED:
+    fairy_rs485_async_error = -EIO;
+    k_sem_give(&fairy_rs485_rx_done_sem);
+    break;
+
+  case UART_RX_DISABLED:
+    k_sem_give(&fairy_rs485_rx_disabled_sem);
+    break;
+
+  case UART_RX_BUF_REQUEST:
+  case UART_RX_BUF_RELEASED:
+  default:
+    break;
+  }
 }
 
-static int fairy_read_frame(struct remote_frame *snapshot) {
-  uint8_t frame[REMOTE_FRAME_SIZE];
-  const int error =
-      i2c_read(fairy_i2c, frame, sizeof(frame), FAIRY_I2C_ADDRESS);
+static int fairy_rs485_init(void) {
+  if (!device_is_ready(fairy_uart)) {
+    return -ENODEV;
+  }
+
+  nrf_gpio_cfg_output(FAIRY_RS485_DE_PIN);
+  nrf_gpio_pin_clear(FAIRY_RS485_DE_PIN);
+
+  return uart_callback_set(fairy_uart, fairy_rs485_uart_callback, NULL);
+}
+
+static uint8_t fairy_rs485_allocate_sequence(void) {
+  const uint8_t sequence = fairy_rs485_next_bus_sequence;
+
+  fairy_rs485_next_bus_sequence++;
+  if (fairy_rs485_next_bus_sequence == FAIRY_RS485_NO_ACK) {
+    fairy_rs485_next_bus_sequence = 0U;
+  }
+
+  return sequence;
+}
+
+static void fairy_rs485_stop_rx(void) {
+  const int error = uart_rx_disable(fairy_uart);
+
+  if (error == 0) {
+    (void)k_sem_take(&fairy_rs485_rx_disabled_sem,
+                     K_MSEC(FAIRY_RS485_RX_DISABLE_TIMEOUT_MS));
+  }
+}
+
+static bool fairy_rs485_validate_response(const uint8_t *response,
+                                          size_t response_length,
+                                          uint8_t opcode, uint8_t sequence) {
+  if ((response_length < 8U) || (response[0] != FAIRY_RS485_RESPONSE_MAGIC_0) ||
+      (response[1] != FAIRY_RS485_RESPONSE_MAGIC_1) ||
+      (response[2] != FAIRY_RS485_ADDRESS) ||
+      (response[3] != (uint8_t)(opcode | FAIRY_RS485_RESPONSE_BIT)) ||
+      (response[4] != sequence)) {
+    return false;
+  }
+
+  const uint16_t received_crc = sys_get_le16(&response[response_length - 2U]);
+  const uint16_t computed_crc = crc16_ccitt(response, response_length - 2U);
+
+  return received_crc == computed_crc;
+}
+
+static int fairy_rs485_exchange(uint8_t opcode, uint8_t value,
+                                uint8_t *response, size_t response_length,
+                                uint8_t *sequence_out) {
+  if ((response == NULL) || (response_length > FAIRY_RS485_MAX_RESPONSE_SIZE)) {
+    return -EINVAL;
+  }
+
+  const uint8_t sequence = fairy_rs485_allocate_sequence();
+  uint8_t request[FAIRY_RS485_REQUEST_SIZE] = {
+      FAIRY_RS485_REQUEST_MAGIC_0,
+      FAIRY_RS485_REQUEST_MAGIC_1,
+      FAIRY_RS485_ADDRESS,
+      opcode,
+      sequence,
+      value,
+      0U,
+      0U,
+  };
+
+  sys_put_le16(crc16_ccitt(request, FAIRY_RS485_REQUEST_SIZE - 2U),
+               &request[FAIRY_RS485_REQUEST_SIZE - 2U]);
+
+  int final_error = -ETIMEDOUT;
+
+  k_mutex_lock(&fairy_rs485_mutex, K_FOREVER);
+
+  for (unsigned int attempt = 0U; attempt < FAIRY_RS485_RETRY_COUNT;
+       ++attempt) {
+    k_sem_reset(&fairy_rs485_tx_done_sem);
+    k_sem_reset(&fairy_rs485_rx_done_sem);
+    k_sem_reset(&fairy_rs485_rx_disabled_sem);
+
+    fairy_rs485_expected_rx_length = response_length;
+    fairy_rs485_received_length = 0U;
+    fairy_rs485_async_error = 0;
+    memset(response, 0, response_length);
+
+    int error = uart_rx_enable(fairy_uart, response, response_length,
+                               FAIRY_RS485_RX_IDLE_TIMEOUT_US);
+    if (error != 0) {
+      final_error = error;
+      continue;
+    }
+
+    /* DE and /RE are tied: high transmits, low receives. */
+    nrf_gpio_pin_set(FAIRY_RS485_DE_PIN);
+    k_busy_wait(1U);
+
+    error = uart_tx(fairy_uart, request, sizeof(request),
+                    FAIRY_RS485_TX_TIMEOUT_US);
+    if (error != 0) {
+      nrf_gpio_pin_clear(FAIRY_RS485_DE_PIN);
+      fairy_rs485_stop_rx();
+      final_error = error;
+      continue;
+    }
+
+    error = k_sem_take(&fairy_rs485_tx_done_sem,
+                       K_MSEC(FAIRY_RS485_TRANSACTION_TIMEOUT_MS));
+    if (error != 0) {
+      nrf_gpio_pin_clear(FAIRY_RS485_DE_PIN);
+    }
+
+    if ((error != 0) || (fairy_rs485_async_error != 0)) {
+      fairy_rs485_stop_rx();
+      final_error =
+          (fairy_rs485_async_error != 0) ? fairy_rs485_async_error : -ETIMEDOUT;
+      continue;
+    }
+
+    error = k_sem_take(&fairy_rs485_rx_done_sem,
+                       K_MSEC(FAIRY_RS485_TRANSACTION_TIMEOUT_MS));
+    const size_t received = fairy_rs485_received_length;
+    const int async_error = fairy_rs485_async_error;
+
+    fairy_rs485_stop_rx();
+
+    if ((error != 0) || (async_error != 0) || (received != response_length)) {
+      final_error = (async_error != 0) ? async_error : -ETIMEDOUT;
+      continue;
+    }
+
+    if (!fairy_rs485_validate_response(response, response_length, opcode,
+                                       sequence)) {
+      final_error = -EBADMSG;
+      continue;
+    }
+
+    if (sequence_out != NULL) {
+      *sequence_out = sequence;
+    }
+
+    final_error = 0;
+    break;
+  }
+
+  k_mutex_unlock(&fairy_rs485_mutex);
+  return final_error;
+}
+
+static int fairy_write_command(uint8_t command) {
+  uint8_t response[FAIRY_RS485_COMMAND_RESPONSE_SIZE];
+  const int error = fairy_rs485_exchange(FAIRY_RS485_OPCODE_COMMAND, command,
+                                         response, sizeof(response), NULL);
 
   if (error != 0) {
     return error;
   }
 
-  return remote_frame_decode(frame, snapshot) ? 0 : -EBADMSG;
+  return (response[5] == 0U) ? 0 : -EIO;
+}
+
+static int fairy_read_frame(struct remote_frame *snapshot) {
+  uint8_t response[FAIRY_RS485_POLL_RESPONSE_SIZE];
+  uint8_t response_sequence = 0U;
+  const uint8_t ack_sequence = fairy_rs485_have_poll_ack
+                                   ? fairy_rs485_poll_ack_sequence
+                                   : FAIRY_RS485_NO_ACK;
+
+  const int error =
+      fairy_rs485_exchange(FAIRY_RS485_OPCODE_POLL, ack_sequence, response,
+                           sizeof(response), &response_sequence);
+
+  if (error != 0) {
+    return error;
+  }
+
+  if (response[5] != REMOTE_FRAME_SIZE) {
+    return -EBADMSG;
+  }
+
+  if (!remote_frame_decode(&response[6], snapshot)) {
+    return -EBADMSG;
+  }
+
+  fairy_rs485_poll_ack_sequence = response_sequence;
+  fairy_rs485_have_poll_ack = true;
+  return 0;
 }
 
 static void fairy_fault_history_reset(void) {
@@ -1527,7 +1785,7 @@ static void fairy_handle_status(const struct remote_frame *snapshot) {
     }
 
     if (fairy_write_command(FAIRY_COMMAND_ACK_RESET_SEEN) != 0) {
-      printk("I2C_COMMAND_ERROR,%s,ACK_RESET\n", NODE_FAIRY);
+      printk("RS485_COMMAND_ERROR,%s,ACK_RESET\n", NODE_FAIRY);
     }
   } else {
     fairy_reset_latch_handled = false;
@@ -1572,7 +1830,7 @@ static void fairy_handle_status(const struct remote_frame *snapshot) {
 
   if (capture_loss || transport_error) {
     if (fairy_write_command(FAIRY_COMMAND_CLEAR_LATCHED_FLAGS) != 0) {
-      printk("I2C_COMMAND_ERROR,%s,CLEAR_FLAGS\n", NODE_FAIRY);
+      printk("RS485_COMMAND_ERROR,%s,CLEAR_FLAGS\n", NODE_FAIRY);
     }
   }
 }
@@ -1590,7 +1848,7 @@ static bool fairy_sync_matches_current_pulse(
   const uint64_t minimum_scaled_age = fairy_scale_phase_ticks(
       phase_after_read, 1000000ULL - FAIRY_PAIRING_MAX_RATE_ERROR_PPM);
   const uint64_t lower_allowance =
-      FAIRY_PAIRING_MAX_I2C_READ_TICKS + FAIRY_PAIRING_AGE_MARGIN_TICKS;
+      FAIRY_PAIRING_MAX_TRANSPORT_TICKS + FAIRY_PAIRING_AGE_MARGIN_TICKS;
   const uint64_t minimum_age_ticks =
       (minimum_scaled_age > lower_allowance)
           ? (minimum_scaled_age - lower_allowance)
@@ -1646,7 +1904,7 @@ static void fairy_process_frame(const struct remote_frame *snapshot,
 
     const uint32_t sequence = adelie_command.sequence;
     const uint64_t korora_rx_ticks = adelie_command.korora_rx_ticks;
-    const uint64_t i2c_start_ticks = adelie_command.i2c_start_ticks;
+    const uint64_t fairy_tx_start_ticks = adelie_command.fairy_tx_start_ticks;
     const uint64_t done_tx_ticks = korora_time_now_ticks();
 
     adelie_command.active = false;
@@ -1679,7 +1937,7 @@ static void fairy_process_frame(const struct remote_frame *snapshot,
     (void)adelie_notification_enqueue(ADELIE_MSG_COMMAND_KORORA_RX, sequence,
                                       korora_rx_ticks, ADELIE_STATUS_OK);
     (void)adelie_notification_enqueue(ADELIE_MSG_COMMAND_FAIRY_TX_START,
-                                      sequence, i2c_start_ticks,
+                                      sequence, fairy_tx_start_ticks,
                                       ADELIE_STATUS_OK);
     (void)adelie_notification_enqueue(ADELIE_MSG_COMMAND_FAIRY_RX, sequence,
                                       fairy_rx_hub, fairy_status);
@@ -1812,7 +2070,7 @@ static void adelie_request_work_handler(struct k_work *work) {
     adelie_command.deadline_ticks =
         request.korora_rx_ticks + ADELIE_COMMAND_TIMEOUT_TICKS;
     adelie_command.korora_rx_ticks = request.korora_rx_ticks;
-    adelie_command.i2c_start_ticks = korora_time_now_ticks();
+    adelie_command.fairy_tx_start_ticks = korora_time_now_ticks();
 
     const uint8_t command =
         FAIRY_COMMAND_DO_NOW_MASK | adelie_command.fairy_token;
@@ -1820,14 +2078,15 @@ static void adelie_request_work_handler(struct k_work *work) {
     const int error = fairy_write_command(command);
 
     stream_log_event(NODE_KORORA, request.sequence, EVENT_KIND_COMMAND_FORWARD,
-                     adelie_command.i2c_start_ticks, KORORA_TIMER_HZ,
-                     (int64_t)adelie_command.i2c_start_ticks, EVENT_STATE_LOCAL,
-                     0ULL);
+                     adelie_command.fairy_tx_start_ticks, KORORA_TIMER_HZ,
+                     (int64_t)adelie_command.fairy_tx_start_ticks,
+                     EVENT_STATE_LOCAL, 0ULL);
 
     if (error != 0) {
-      stream_log_fault(NODE_FAIRY, "I2C_COMMAND_WRITE", error,
+      stream_log_fault(NODE_FAIRY, "RS485_COMMAND_WRITE", error,
                        request.sequence);
-      adelie_error_enqueue(request.sequence, ADELIE_STATUS_I2C_WRITE_FAILED);
+      adelie_error_enqueue(request.sequence,
+                           ADELIE_STATUS_FAIRY_TRANSPORT_FAILED);
 
       adelie_command.active = false;
       continue;
@@ -3586,21 +3845,22 @@ static void fairy_poll_work_handler(struct k_work *work) {
   const uint32_t phase_after_read = korora_timer_phase_ticks();
 
   if (error != 0) {
-    fairy_consecutive_i2c_errors++;
-    printk("I2C_READ_ERROR,%s,%u,%d,%u\n", NODE_FAIRY, pulse_after_read, error,
-           fairy_consecutive_i2c_errors);
+    fairy_consecutive_transport_errors++;
+    printk("RS485_READ_ERROR,%s,%u,%d,%u\n", NODE_FAIRY, pulse_after_read,
+           error, fairy_consecutive_transport_errors);
 
     if (fairy_sync_window_state.open &&
-        (fairy_consecutive_i2c_errors >= FAIRY_MAX_CONSECUTIVE_I2C_ERRORS)) {
+        (fairy_consecutive_transport_errors >=
+         FAIRY_MAX_CONSECUTIVE_TRANSPORT_ERRORS)) {
       fairy_sync_window_state.invalid = true;
-      sync_node_reset(&fairy_node, "repeated_i2c_read_error");
+      sync_node_reset(&fairy_node, "repeated_rs485_read_error");
     }
 
     fairy_schedule_next_poll(phase_after_read, 0U);
     return;
   }
 
-  fairy_consecutive_i2c_errors = 0U;
+  fairy_consecutive_transport_errors = 0U;
   fairy_handle_status(&snapshot);
   fairy_process_frame(&snapshot, pulse_before_read, pulse_after_read,
                       phase_after_read);
@@ -3682,12 +3942,17 @@ int main(void) {
          "generated_hub_ticks,acquired_hub_ticks,generation_error_ns,wire_"
          "offset_ns,total_error_ns\n");
 
-  if (!device_is_ready(fairy_i2c)) {
-    stream_log_fault(NODE_FAIRY, "I2C_NOT_READY", -ENODEV, 0ULL);
+  int error = fairy_rs485_init();
+  if (error != 0) {
+    stream_log_fault(NODE_FAIRY, "RS485_INIT", error, 0ULL);
     return 0;
   }
 
-  int error = korora_hfxo_acquire();
+  printk("FAIRY_RS485_READY,%s,address=%u,baud=%u,uart=1,de_pin=%u\n",
+         NODE_FAIRY, FAIRY_RS485_ADDRESS, FAIRY_RS485_BAUD,
+         (unsigned int)FAIRY_RS485_DE_PIN);
+
+  error = korora_hfxo_acquire();
   if (error != 0) {
     stream_log_fault(NODE_KORORA, "HFXO_ACQUIRE", error, 0ULL);
     return 0;
@@ -3738,8 +4003,9 @@ int main(void) {
 
   (void)k_work_reschedule(&fairy_poll_work, K_NO_WAIT);
 
-  printk("READY,%s,%u,%u,0x%02x,%u,%lld,%s,%u\n", NODE_KORORA, KORORA_TIMER_HZ,
-         KORORA_SYNC_PERIOD_TICKS, FAIRY_I2C_ADDRESS, CLOCK_MODEL_WINDOW_SIZE,
+  printk("READY,%s,%u,%u,rs485:%u@%u,%u,%lld,%s,%u\n", NODE_KORORA,
+         KORORA_TIMER_HZ, KORORA_SYNC_PERIOD_TICKS, FAIRY_RS485_ADDRESS,
+         FAIRY_RS485_BAUD, CLOCK_MODEL_WINDOW_SIZE,
          (long long)math_round_i64(CLOCK_MODEL_MAX_SKEW_PPM),
          GALAPAGOS_ADVERTISED_NAME, EVENT_INPUT_PIN);
   printk(

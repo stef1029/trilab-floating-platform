@@ -1,33 +1,62 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
-#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 / {
     zephyr,user {
-        /* Korora hardware synchronization output to Fairy. */
+        /* Korora hardware synchronization output to every Fairy. */
         sync-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
 
-        /* Existing shared external event input. */
+        /* Shared external event input. */
         event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
 
-        /* Galapagos scheduled TTL output is wired here. */
-        ttl-input-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+        /* Galapagos is now 3.3 V: use a normal digital GPIOTE input. */
+        ttl-input-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+
+        /* THVD1410 DE and /RE tied together: low=receive, high=transmit. */
+        fairy-rs485-de-gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
     };
+};
+
+&pinctrl {
+    fairy_uart1_default: fairy_uart1_default {
+        group1 {
+            /* P0.27 -> THVD1410 D. */
+            psels = <NRF_PSEL(UART_TX, 0, 27)>;
+        };
+
+        group2 {
+            /* P0.26 <- THVD1410 R. */
+            psels = <NRF_PSEL(UART_RX, 0, 26)>;
+            bias-pull-up;
+        };
+    };
+
+    fairy_uart1_sleep: fairy_uart1_sleep {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 0, 27)>,
+                    <NRF_PSEL(UART_RX, 0, 26)>;
+            low-power-enable;
+        };
+    };
+};
+
+&uart1 {
+    compatible = "nordic,nrf-uarte";
+    status = "okay";
+    current-speed = <460800>;
+    pinctrl-0 = <&fairy_uart1_default>;
+    pinctrl-1 = <&fairy_uart1_sleep>;
+    pinctrl-names = "default", "sleep";
 };
 
 &timer2 {
     status = "okay";
 };
 
-/* Phase mirror used only for the new TTL hardware capture. */
 &timer3 {
     status = "okay";
 };
 
 &rtc2 {
     status = "okay";
-};
-
-&i2c0 {
-    status = "okay";
-    clock-frequency = <I2C_BITRATE_STANDARD>;
 };

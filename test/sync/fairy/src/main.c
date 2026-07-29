@@ -1,23 +1,24 @@
 /*
- * NUCLEO-G071RB reward-port timing target
+ * fairy - NUCLEO-G071RB timing and target controller
  *
  * Build: PlatformIO + STM32Cube HAL
  * Board: nucleo_g071rb
  *
- * Connections:
- *   PB8 / D15  <-  Korora I2C SCL
- *   PB9 / D14  <-> Korora I2C SDA
- *   PA0 / A0   <-  Korora SYNC pulse (TIM2_CH1)
- *   PA1 / A1   <-  reward/event input (TIM2_CH2)
- *   GND        --- common ground
+ * RS-485 connections (THVD1410, powered from 3.3 V):
+ *   PB6        ->  D   (USART1_TX)
+ *   PB7        <-  R   (USART1_RX)
+ *   PB5        ->  DE and /RE tied together
+ *   A/B/GND    <-> Korora RS-485 transceiver A/B/GND
  *
- * Design:
- *   - TIM2 is a free-running 16 MHz clock and is never reset after startup.
- *   - SYNC, EVENT, and COMMAND_ACK records share one FIFO.
- *   - A completed 40-byte I2C read pops exactly one FIFO record.
- *   - A one-byte I2C write with bit 7 set executes an immediate command.
- *   - Command execution and ACK creation happen in the I2C completion path.
- *   - Debug UART is interrupt-driven and never blocks functional firmware.
+ * Timing connections retained:
+ *   PA0 / A0   <- Korora SYNC pulse (TIM2_CH1)
+ *   PA1 / A1   <- shared reward/event input (TIM2_CH2)
+ *   PA2/PA3    <-> ST-LINK virtual COM port (USART2 debug)
+ *
+ * The RS-485 protocol is addressed and retry-safe. A POLL response containing
+ * a record is removed from the FIFO only when the following POLL acknowledges
+ * that response sequence. Retrying the same request therefore cannot silently
+ * lose or duplicate a record.
  */
 
 #include "stm32g0xx_hal.h"
@@ -28,8 +29,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-#define I2C_TARGET_ADDRESS 0x42U
 
 #define REWARD_FRAME_MAGIC 0xA5U
 #define REWARD_FRAME_VERSION 2U
@@ -45,14 +44,14 @@
 #define FRAME_OFFSET_CAPTURE_TICKS 8U
 #define FRAME_OFFSET_SNAPSHOT_TICKS 16U
 #define FRAME_OFFSET_CAPTURE_LOSS_COUNT 24U
-#define FRAME_OFFSET_I2C_ERROR_COUNT 28U
+#define FRAME_OFFSET_TRANSPORT_ERROR_COUNT 28U
 #define FRAME_OFFSET_AUXILIARY 32U
 #define FRAME_OFFSET_CRC 36U
 
 #define REWARD_STATUS_RECORD_VALID (1U << 0)
 #define REWARD_STATUS_FIRST_AFTER_RESET (1U << 1)
 #define REWARD_STATUS_CAPTURE_LOSS_LATCHED (1U << 2)
-#define REWARD_STATUS_I2C_ERROR_LATCHED (1U << 3)
+#define REWARD_STATUS_TRANSPORT_ERROR_LATCHED (1U << 3)
 #define REWARD_STATUS_CLOCK_FAULT (1U << 4)
 
 #define REWARD_RECORD_NONE 0U
@@ -66,6 +65,26 @@
 #define REWARD_COMMAND_CLEAR_LATCHED_FLAGS 0x02U
 #define REWARD_COMMAND_DO_NOW_MASK 0x80U
 #define REWARD_COMMAND_TOKEN_MASK 0x7FU
+
+#define FAIRY_RS485_ADDRESS 1U
+#define FAIRY_RS485_BAUD_RATE 460800U
+#define FAIRY_RS485_REQUEST_MAGIC_0 0xA6U
+#define FAIRY_RS485_REQUEST_MAGIC_1 0x5AU
+#define FAIRY_RS485_RESPONSE_MAGIC_0 0xA6U
+#define FAIRY_RS485_RESPONSE_MAGIC_1 0xA5U
+#define FAIRY_RS485_OPCODE_POLL 0x10U
+#define FAIRY_RS485_OPCODE_COMMAND 0x11U
+#define FAIRY_RS485_RESPONSE_BIT 0x80U
+#define FAIRY_RS485_NO_ACK 0xFFU
+#define FAIRY_RS485_REQUEST_SIZE 8U
+#define FAIRY_RS485_COMMAND_RESPONSE_SIZE 8U
+#define FAIRY_RS485_POLL_RESPONSE_SIZE (6U + REWARD_FRAME_SIZE + 2U)
+#define FAIRY_RS485_MAX_RESPONSE_SIZE FAIRY_RS485_POLL_RESPONSE_SIZE
+#define FAIRY_RS485_STATUS_OK 0U
+#define FAIRY_RS485_STATUS_BAD_COMMAND 1U
+#define FAIRY_RS485_STATUS_QUEUE_FULL 2U
+#define FAIRY_RS485_TX_TIMEOUT_MS 10U
+#define FAIRY_RS485_TURNAROUND_TICKS 640U /* 40 us at TIM2 = 16 MHz */
 
 #define CAPTURE_QUEUE_CAPACITY 16U
 
@@ -82,13 +101,13 @@ struct capture_record {
   uint8_t flags;
 };
 
-I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim2;
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 static volatile uint32_t timer_overflow_high;
 static volatile uint32_t capture_loss_count;
-static volatile uint32_t i2c_error_count;
+static volatile uint32_t transport_error_count;
 static volatile uint8_t latched_status_flags;
 static uint32_t reset_cause;
 
@@ -97,15 +116,30 @@ static volatile uint8_t capture_queue_head;
 static volatile uint8_t capture_queue_tail;
 static volatile uint8_t capture_queue_count;
 
-static uint8_t i2c_tx_frame[REWARD_FRAME_SIZE];
-static volatile bool i2c_tx_frame_has_record;
-static volatile uint64_t i2c_tx_record_ticks;
-static volatile uint8_t i2c_tx_record_type;
+static uint8_t rs485_rx_block[FAIRY_RS485_REQUEST_SIZE];
+static volatile uint8_t rs485_request_buffer[FAIRY_RS485_REQUEST_SIZE];
+static volatile uint8_t rs485_request_index;
+static volatile bool rs485_response_pending;
+static volatile uint8_t rs485_response_length;
+static uint8_t rs485_response_buffer[FAIRY_RS485_MAX_RESPONSE_SIZE];
 
-static volatile uint8_t i2c_rx_command;
-static volatile bool i2c_command_rx_armed;
-static volatile uint32_t i2c_rx_callback_count;
-static volatile uint32_t i2c_listen_fallback_count;
+static bool rs485_last_request_valid;
+static uint8_t rs485_last_request_opcode;
+static uint8_t rs485_last_request_sequence;
+static uint8_t rs485_last_request_value;
+static uint8_t rs485_last_response[FAIRY_RS485_MAX_RESPONSE_SIZE];
+static uint8_t rs485_last_response_length;
+
+static bool rs485_outstanding_record;
+static uint8_t rs485_outstanding_sequence;
+static uint64_t rs485_outstanding_record_ticks;
+static uint8_t rs485_outstanding_record_type;
+
+static volatile uint32_t rs485_request_count;
+static volatile uint32_t rs485_duplicate_request_count;
+static volatile uint32_t rs485_response_sent_count;
+static volatile uint32_t rs485_response_tx_error_count;
+static volatile uint32_t rs485_response_overwrite_count;
 
 static volatile uint32_t do_now_counter;
 
@@ -120,18 +154,30 @@ static volatile uint16_t debug_uart_tx_head;
 static volatile uint16_t debug_uart_tx_tail;
 static volatile uint32_t debug_uart_dropped_bytes;
 
+static volatile uint32_t rs485_rx_byte_count;
+static volatile uint32_t rs485_framing_error_count;
+static volatile uint32_t rs485_noise_error_count;
+static volatile uint32_t rs485_overrun_error_count;
+static volatile uint32_t rs485_parity_error_count;
+
 static void SystemClock_Config(void);
 static void GPIO_Init(void);
+static void USART1_Init(void);
 static void USART2_Init(void);
 static void TIM2_Init(void);
-static void I2C1_Init(void);
 static void Error_Handler(void);
-static void prepare_i2c_snapshot(void);
+static void prepare_remote_snapshot(uint8_t frame[REWARD_FRAME_SIZE],
+                                    bool *has_record_out,
+                                    uint64_t *record_ticks_out,
+                                    uint8_t *record_type_out);
+static void service_rs485_response(void);
 static void service_command_debug(void);
 static void service_uart_heartbeat(void);
 
 /*
- * Needs to be replaced with a real do_something_now function
+ * Replace this with the real immediate action.
+ * It runs when a complete RS-485 command request is received, so it must be
+ * short, non-blocking, and ISR-safe.
  */
 __attribute__((weak)) void reward_do_something_now_isr(void) {
   do_now_counter++;
@@ -257,10 +303,20 @@ static void service_uart_heartbeat(void) {
   last_ms = now_ms;
   heartbeat_index++;
 
-  debug_uart_logf("UART_ALIVE,%lu,DROPPED,%lu,I2C_ERRORS,%lu\r\n",
+  debug_uart_logf("UART_ALIVE,%lu,RX,%lu,REQUESTS,%lu,DUPLICATES,%lu,"
+                  "RESPONSES,%lu,TX_ERRORS,%lu,OVERWRITES,%lu,"
+                  "FE,%lu,NE,%lu,ORE,%lu,PE,%lu\r\n",
                   (unsigned long)heartbeat_index,
-                  (unsigned long)debug_uart_dropped_bytes,
-                  (unsigned long)i2c_error_count);
+                  (unsigned long)rs485_rx_byte_count,
+                  (unsigned long)rs485_request_count,
+                  (unsigned long)rs485_duplicate_request_count,
+                  (unsigned long)rs485_response_sent_count,
+                  (unsigned long)rs485_response_tx_error_count,
+                  (unsigned long)rs485_response_overwrite_count,
+                  (unsigned long)rs485_framing_error_count,
+                  (unsigned long)rs485_noise_error_count,
+                  (unsigned long)rs485_overrun_error_count,
+                  (unsigned long)rs485_parity_error_count);
 }
 
 /* ---------------------------- Timer/FIFO --------------------------------- */
@@ -377,54 +433,40 @@ static uint64_t timer_snapshot_locked(void) {
   return ((uint64_t)high << 32) | low;
 }
 
+static void timer_busy_wait_ticks(uint32_t ticks) {
+  const uint32_t start = TIM2->CNT;
+  while ((uint32_t)(TIM2->CNT - start) < ticks) {
+  }
+}
+
 /* -------------------------- Command handling ------------------------------ */
 
-static void process_i2c_command_from_isr(uint8_t command) {
+static uint8_t process_rs485_command_from_isr(uint8_t command,
+                                              uint64_t received_ticks) {
   if (command == REWARD_COMMAND_ACK_RESET_SEEN) {
-    const uint32_t saved_primask = __get_PRIMASK();
-    __disable_irq();
     latched_status_flags &= (uint8_t)~REWARD_STATUS_FIRST_AFTER_RESET;
-    if (saved_primask == 0U) {
-      __enable_irq();
-    }
-    return;
+    return FAIRY_RS485_STATUS_OK;
   }
 
   if (command == REWARD_COMMAND_CLEAR_LATCHED_FLAGS) {
-    const uint32_t saved_primask = __get_PRIMASK();
-    __disable_irq();
-    latched_status_flags &=
-        (uint8_t)~(REWARD_STATUS_CAPTURE_LOSS_LATCHED |
-                   REWARD_STATUS_I2C_ERROR_LATCHED | REWARD_STATUS_CLOCK_FAULT);
-    if (saved_primask == 0U) {
-      __enable_irq();
-    }
-    return;
+    latched_status_flags &= (uint8_t)~(REWARD_STATUS_CAPTURE_LOSS_LATCHED |
+                                       REWARD_STATUS_TRANSPORT_ERROR_LATCHED |
+                                       REWARD_STATUS_CLOCK_FAULT);
+    return FAIRY_RS485_STATUS_OK;
   }
 
   if ((command & REWARD_COMMAND_DO_NOW_MASK) == 0U) {
-    return;
+    return FAIRY_RS485_STATUS_BAD_COMMAND;
   }
 
   const uint8_t token = command & REWARD_COMMAND_TOKEN_MASK;
-  uint64_t received_ticks;
-  uint64_t completed_ticks;
-  bool queued;
-
-  uint32_t saved_primask = __get_PRIMASK();
-  __disable_irq();
-  received_ticks = timer_snapshot_locked();
-  if (saved_primask == 0U) {
-    __enable_irq();
-  }
-
   reward_do_something_now_isr();
 
-  saved_primask = __get_PRIMASK();
+  const uint32_t saved_primask = __get_PRIMASK();
   __disable_irq();
-
-  completed_ticks = timer_snapshot_locked();
-  queued = queue_command_ack_locked(token, received_ticks, completed_ticks);
+  const uint64_t completed_ticks = timer_snapshot_locked();
+  const bool queued =
+      queue_command_ack_locked(token, received_ticks, completed_ticks);
 
   command_debug_token = token;
   command_debug_received_ticks = received_ticks;
@@ -432,26 +474,11 @@ static void process_i2c_command_from_isr(uint8_t command) {
   command_debug_queued = queued;
   __DMB();
   command_debug_pending = true;
-
   if (saved_primask == 0U) {
     __enable_irq();
   }
-}
 
-static void complete_i2c_command_receive_from_isr(bool from_fallback) {
-  if (!i2c_command_rx_armed) {
-    return;
-  }
-
-  i2c_command_rx_armed = false;
-
-  if (from_fallback) {
-    i2c_listen_fallback_count++;
-  } else {
-    i2c_rx_callback_count++;
-  }
-
-  process_i2c_command_from_isr(i2c_rx_command);
+  return queued ? FAIRY_RS485_STATUS_OK : FAIRY_RS485_STATUS_QUEUE_FULL;
 }
 
 static void service_command_debug(void) {
@@ -459,8 +486,8 @@ static void service_command_debug(void) {
   bool queued;
   uint64_t received_ticks;
   uint64_t completed_ticks;
-  uint32_t callback_count;
-  uint32_t fallback_count;
+  uint32_t request_count;
+  uint32_t duplicate_count;
 
   const uint32_t saved_primask = __get_PRIMASK();
   __disable_irq();
@@ -476,23 +503,27 @@ static void service_command_debug(void) {
   queued = command_debug_queued;
   received_ticks = command_debug_received_ticks;
   completed_ticks = command_debug_completed_ticks;
-  callback_count = i2c_rx_callback_count;
-  fallback_count = i2c_listen_fallback_count;
+  request_count = rs485_request_count;
+  duplicate_count = rs485_duplicate_request_count;
   command_debug_pending = false;
 
   if (saved_primask == 0U) {
     __enable_irq();
   }
 
-  debug_uart_logf("REWARD_COMMAND,%u,%u,%llu,%llu,RX_CB,%lu,FALLBACK,%lu\r\n",
-                  token, queued ? 1U : 0U, (unsigned long long)received_ticks,
-                  (unsigned long long)completed_ticks,
-                  (unsigned long)callback_count, (unsigned long)fallback_count);
+  debug_uart_logf(
+      "REWARD_COMMAND,%u,%u,%llu,%llu,RS485_REQUESTS,%lu,DUPLICATES,%lu\r\n",
+      token, queued ? 1U : 0U, (unsigned long long)received_ticks,
+      (unsigned long long)completed_ticks, (unsigned long)request_count,
+      (unsigned long)duplicate_count);
 }
 
-/* -------------------------- I2C frame ------------------------------------ */
+/* ---------------------- Shared remote frame ----------------------------- */
 
-static void prepare_i2c_snapshot(void) {
+static void prepare_remote_snapshot(uint8_t frame[REWARD_FRAME_SIZE],
+                                    bool *has_record_out,
+                                    uint64_t *record_ticks_out,
+                                    uint8_t *record_type_out) {
   struct capture_record record;
   uint8_t pending_count;
   uint8_t status_flags;
@@ -504,7 +535,6 @@ static void prepare_i2c_snapshot(void) {
   __disable_irq();
 
   const bool has_record = peek_capture_locked(&record, &pending_count);
-
   status_flags = latched_status_flags;
   if (has_record) {
     status_flags |= REWARD_STATUS_RECORD_VALID;
@@ -515,36 +545,246 @@ static void prepare_i2c_snapshot(void) {
                        : timer_snapshot_locked();
 
   loss_count = capture_loss_count;
-  error_count = i2c_error_count;
-
-  i2c_tx_frame_has_record = has_record;
-  i2c_tx_record_ticks = record.ticks;
-  i2c_tx_record_type = record.type;
+  error_count = transport_error_count;
 
   if (saved_primask == 0U) {
     __enable_irq();
   }
 
-  memset(i2c_tx_frame, 0, sizeof(i2c_tx_frame));
+  memset(frame, 0, REWARD_FRAME_SIZE);
+  frame[FRAME_OFFSET_MAGIC] = REWARD_FRAME_MAGIC;
+  frame[FRAME_OFFSET_VERSION] = REWARD_FRAME_VERSION;
+  frame[FRAME_OFFSET_STATUS_FLAGS] = status_flags;
+  frame[FRAME_OFFSET_LENGTH] = REWARD_FRAME_SIZE;
+  frame[FRAME_OFFSET_RECORD_TYPE] = record.type;
+  frame[FRAME_OFFSET_PENDING_COUNT] = pending_count;
+  frame[FRAME_OFFSET_RECORD_FLAGS] = record.flags;
 
-  i2c_tx_frame[FRAME_OFFSET_MAGIC] = REWARD_FRAME_MAGIC;
-  i2c_tx_frame[FRAME_OFFSET_VERSION] = REWARD_FRAME_VERSION;
-  i2c_tx_frame[FRAME_OFFSET_STATUS_FLAGS] = status_flags;
-  i2c_tx_frame[FRAME_OFFSET_LENGTH] = REWARD_FRAME_SIZE;
-  i2c_tx_frame[FRAME_OFFSET_RECORD_TYPE] = record.type;
-  i2c_tx_frame[FRAME_OFFSET_PENDING_COUNT] = pending_count;
-  i2c_tx_frame[FRAME_OFFSET_RECORD_FLAGS] = record.flags;
-
-  put_u64_le(&i2c_tx_frame[FRAME_OFFSET_CAPTURE_TICKS], record.ticks);
-  put_u64_le(&i2c_tx_frame[FRAME_OFFSET_SNAPSHOT_TICKS], snapshot_ticks);
-  put_u32_le(&i2c_tx_frame[FRAME_OFFSET_CAPTURE_LOSS_COUNT], loss_count);
-  put_u32_le(&i2c_tx_frame[FRAME_OFFSET_I2C_ERROR_COUNT], error_count);
-  put_u32_le(&i2c_tx_frame[FRAME_OFFSET_AUXILIARY],
+  put_u64_le(&frame[FRAME_OFFSET_CAPTURE_TICKS], record.ticks);
+  put_u64_le(&frame[FRAME_OFFSET_SNAPSHOT_TICKS], snapshot_ticks);
+  put_u32_le(&frame[FRAME_OFFSET_CAPTURE_LOSS_COUNT], loss_count);
+  put_u32_le(&frame[FRAME_OFFSET_TRANSPORT_ERROR_COUNT], error_count);
+  put_u32_le(&frame[FRAME_OFFSET_AUXILIARY],
              (record.type == REWARD_RECORD_COMMAND_ACK) ? record.auxiliary
                                                         : reset_cause);
 
-  const uint16_t crc = crc16_ccitt(i2c_tx_frame, FRAME_OFFSET_CRC);
-  put_u16_le(&i2c_tx_frame[FRAME_OFFSET_CRC], crc);
+  put_u16_le(&frame[FRAME_OFFSET_CRC], crc16_ccitt(frame, FRAME_OFFSET_CRC));
+
+  *has_record_out = has_record;
+  *record_ticks_out = record.ticks;
+  *record_type_out = record.type;
+}
+
+static void rs485_encode_response(uint8_t *response, uint8_t opcode,
+                                  uint8_t sequence, uint8_t field,
+                                  size_t response_length) {
+  response[0] = FAIRY_RS485_RESPONSE_MAGIC_0;
+  response[1] = FAIRY_RS485_RESPONSE_MAGIC_1;
+  response[2] = FAIRY_RS485_ADDRESS;
+  response[3] = (uint8_t)(opcode | FAIRY_RS485_RESPONSE_BIT);
+  response[4] = sequence;
+  response[5] = field;
+  put_u16_le(&response[response_length - 2U],
+             crc16_ccitt(response, response_length - 2U));
+}
+
+static void rs485_publish_response_from_isr(const uint8_t *response,
+                                            uint8_t response_length) {
+  if (rs485_response_pending) {
+    rs485_response_overwrite_count++;
+  }
+
+  memcpy(rs485_response_buffer, response, response_length);
+  rs485_response_length = response_length;
+  __DMB();
+  rs485_response_pending = true;
+}
+
+static void rs485_cache_and_publish_from_isr(uint8_t opcode, uint8_t sequence,
+                                             uint8_t value,
+                                             const uint8_t *response,
+                                             uint8_t response_length) {
+  rs485_last_request_valid = true;
+  rs485_last_request_opcode = opcode;
+  rs485_last_request_sequence = sequence;
+  rs485_last_request_value = value;
+  rs485_last_response_length = response_length;
+  memcpy(rs485_last_response, response, response_length);
+  rs485_publish_response_from_isr(response, response_length);
+}
+
+static void rs485_acknowledge_record_from_isr(uint8_t ack_sequence) {
+  if (!rs485_outstanding_record ||
+      (ack_sequence != rs485_outstanding_sequence)) {
+    return;
+  }
+
+  const bool popped = pop_expected_capture_locked(
+      rs485_outstanding_record_type, rs485_outstanding_record_ticks);
+  rs485_outstanding_record = false;
+
+  if (!popped) {
+    latched_status_flags |= REWARD_STATUS_CLOCK_FAULT;
+  }
+}
+
+static void rs485_handle_request_from_isr(void) {
+  uint8_t request[FAIRY_RS485_REQUEST_SIZE];
+  for (size_t i = 0U; i < FAIRY_RS485_REQUEST_SIZE; ++i) {
+    request[i] = rs485_request_buffer[i];
+  }
+
+  if ((request[0] != FAIRY_RS485_REQUEST_MAGIC_0) ||
+      (request[1] != FAIRY_RS485_REQUEST_MAGIC_1)) {
+    return;
+  }
+
+  if (request[2] != FAIRY_RS485_ADDRESS) {
+    return;
+  }
+
+  const uint16_t received_crc =
+      (uint16_t)request[6] | ((uint16_t)request[7] << 8);
+  if (received_crc != crc16_ccitt(request, FAIRY_RS485_REQUEST_SIZE - 2U)) {
+    transport_error_count++;
+    latched_status_flags |= REWARD_STATUS_TRANSPORT_ERROR_LATCHED;
+    return;
+  }
+
+  const uint8_t opcode = request[3];
+  const uint8_t sequence = request[4];
+  const uint8_t value = request[5];
+  rs485_request_count++;
+
+  if (rs485_last_request_valid && (opcode == rs485_last_request_opcode) &&
+      (sequence == rs485_last_request_sequence) &&
+      (value == rs485_last_request_value)) {
+    rs485_duplicate_request_count++;
+    rs485_publish_response_from_isr(rs485_last_response,
+                                    rs485_last_response_length);
+    return;
+  }
+
+  if (opcode == FAIRY_RS485_OPCODE_POLL) {
+    rs485_acknowledge_record_from_isr(value);
+
+    bool has_record;
+    uint64_t record_ticks;
+    uint8_t record_type;
+    uint8_t response[FAIRY_RS485_POLL_RESPONSE_SIZE] = {0};
+
+    prepare_remote_snapshot(&response[6], &has_record, &record_ticks,
+                            &record_type);
+    rs485_encode_response(response, opcode, sequence, REWARD_FRAME_SIZE,
+                          sizeof(response));
+
+    rs485_outstanding_record = has_record;
+    if (has_record) {
+      rs485_outstanding_sequence = sequence;
+      rs485_outstanding_record_ticks = record_ticks;
+      rs485_outstanding_record_type = record_type;
+    }
+
+    rs485_cache_and_publish_from_isr(opcode, sequence, value, response,
+                                     sizeof(response));
+    return;
+  }
+
+  if (opcode == FAIRY_RS485_OPCODE_COMMAND) {
+    const uint32_t saved_primask = __get_PRIMASK();
+    __disable_irq();
+    const uint64_t received_ticks = timer_snapshot_locked();
+    if (saved_primask == 0U) {
+      __enable_irq();
+    }
+
+    const uint8_t status =
+        process_rs485_command_from_isr(value, received_ticks);
+    uint8_t response[FAIRY_RS485_COMMAND_RESPONSE_SIZE] = {0};
+    rs485_encode_response(response, opcode, sequence, status, sizeof(response));
+    rs485_cache_and_publish_from_isr(opcode, sequence, value, response,
+                                     sizeof(response));
+  }
+}
+
+static void rs485_consume_byte_from_isr(uint8_t byte) {
+  if (rs485_request_index == 0U) {
+    if (byte == FAIRY_RS485_REQUEST_MAGIC_0) {
+      rs485_request_buffer[0] = byte;
+      rs485_request_index = 1U;
+    }
+    return;
+  }
+
+  if (rs485_request_index == 1U) {
+    if (byte == FAIRY_RS485_REQUEST_MAGIC_1) {
+      rs485_request_buffer[1] = byte;
+      rs485_request_index = 2U;
+    } else if (byte == FAIRY_RS485_REQUEST_MAGIC_0) {
+      rs485_request_buffer[0] = byte;
+      rs485_request_index = 1U;
+    } else {
+      rs485_request_index = 0U;
+    }
+    return;
+  }
+
+  rs485_request_buffer[rs485_request_index++] = byte;
+  if (rs485_request_index >= FAIRY_RS485_REQUEST_SIZE) {
+    rs485_request_index = 0U;
+    rs485_handle_request_from_isr();
+  }
+}
+
+static void service_rs485_response(void) {
+  uint8_t response[FAIRY_RS485_MAX_RESPONSE_SIZE];
+  uint8_t response_length;
+
+  const uint32_t saved_primask = __get_PRIMASK();
+  __disable_irq();
+  if (!rs485_response_pending) {
+    if (saved_primask == 0U) {
+      __enable_irq();
+    }
+    return;
+  }
+
+  response_length = rs485_response_length;
+  memcpy(response, rs485_response_buffer, response_length);
+  rs485_response_pending = false;
+  if (saved_primask == 0U) {
+    __enable_irq();
+  }
+
+  /* Give Korora time to release DE and enable its receiver. */
+  timer_busy_wait_ticks(FAIRY_RS485_TURNAROUND_TICKS);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+  for (volatile uint32_t delay = 0U; delay < 16U; ++delay) {
+    __NOP();
+  }
+
+  const HAL_StatusTypeDef status = HAL_UART_Transmit(
+      &huart1, response, response_length, FAIRY_RS485_TX_TIMEOUT_MS);
+
+  if (status == HAL_OK) {
+    rs485_response_sent_count++;
+  } else {
+    rs485_response_tx_error_count++;
+  }
+  while ((status == HAL_OK) &&
+         (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_TC) == RESET)) {
+  }
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+
+  if (status != HAL_OK) {
+    const uint32_t error_primask = __get_PRIMASK();
+    __disable_irq();
+    transport_error_count++;
+    latched_status_flags |= REWARD_STATUS_TRANSPORT_ERROR_LATCHED;
+    if (error_primask == 0U) {
+      __enable_irq();
+    }
+  }
 }
 
 /* ------------------------------ Main ------------------------------------- */
@@ -561,17 +801,19 @@ int main(void) {
   GPIO_Init();
   USART2_Init();
   TIM2_Init();
-  I2C1_Init();
+  USART1_Init();
 
   debug_uart_puts("\r\n"
-                  "REWARD_BOOT,G071RB\r\n"
-                  "REWARD_COMMAND_PROTOCOL,1\r\n");
+                  "FAIRY_BOOT,G071RB\r\n"
+                  "FAIRY_RS485,address=1,baud=460800,protocol=1\r\n");
 
-  if (HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK) {
+  if (HAL_UART_Receive_IT(&huart1, rs485_rx_block, sizeof(rs485_rx_block)) !=
+      HAL_OK) {
     Error_Handler();
   }
 
   while (1) {
+    service_rs485_response();
     service_command_debug();
     service_uart_heartbeat();
     __WFI();
@@ -627,12 +869,70 @@ static void GPIO_Init(void) {
   gpio.Alternate = GPIO_AF1_USART2;
   HAL_GPIO_Init(GPIOA, &gpio);
 
-  gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9;
-  gpio.Mode = GPIO_MODE_AF_OD;
-  gpio.Pull = GPIO_PULLUP;
-  gpio.Speed = GPIO_SPEED_FREQ_LOW;
-  gpio.Alternate = GPIO_AF6_I2C1;
+  /* PB6 = USART1_TX. */
+  gpio.Pin = GPIO_PIN_6;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  gpio.Alternate = GPIO_AF0_USART1;
   HAL_GPIO_Init(GPIOB, &gpio);
+
+  /* PB7 = USART1_RX. Pull up because THVD1410 R is high-Z while /RE is high. */
+  gpio.Pin = GPIO_PIN_7;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  gpio.Alternate = GPIO_AF0_USART1;
+  HAL_GPIO_Init(GPIOB, &gpio);
+
+  /* PB5 drives tied THVD1410 DE and /RE. Default to receive. */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+  gpio.Pin = GPIO_PIN_5;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+static void USART1_Init(void) {
+  RCC_PeriphCLKInitTypeDef peripheral_clock = {0};
+
+  peripheral_clock.PeriphClockSelection = RCC_PERIPHCLK_USART1;
+  peripheral_clock.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
+  if (HAL_RCCEx_PeriphCLKConfig(&peripheral_clock) != HAL_OK) {
+    Error_Handler();
+  }
+
+  __HAL_RCC_USART1_CLK_ENABLE();
+
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = FAIRY_RS485_BAUD_RATE;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+
+  if (HAL_UART_Init(&huart1) != HAL_OK) {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart1, UART_TXFIFO_THRESHOLD_1_8) !=
+      HAL_OK) {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart1, UART_RXFIFO_THRESHOLD_1_8) !=
+      HAL_OK) {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_EnableFifoMode(&huart1) != HAL_OK) {
+    Error_Handler();
+  }
+
+  HAL_NVIC_SetPriority(USART1_IRQn, 1U, 0U);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
 }
 
 static void USART2_Init(void) {
@@ -676,7 +976,7 @@ static void USART2_Init(void) {
     Error_Handler();
   }
 
-  HAL_NVIC_SetPriority(USART2_IRQn, 1U, 0U);
+  HAL_NVIC_SetPriority(USART2_IRQn, 2U, 0U);
   HAL_NVIC_EnableIRQ(USART2_IRQn);
 }
 
@@ -725,44 +1025,6 @@ static void TIM2_Init(void) {
   }
 
   __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE | TIM_IT_CC1 | TIM_IT_CC2);
-}
-
-static void I2C1_Init(void) {
-  RCC_PeriphCLKInitTypeDef peripheral_clock = {0};
-
-  peripheral_clock.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
-  peripheral_clock.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-
-  if (HAL_RCCEx_PeriphCLKConfig(&peripheral_clock) != HAL_OK) {
-    Error_Handler();
-  }
-
-  __HAL_RCC_I2C1_CLK_ENABLE();
-
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00303D5BU;
-  hi2c1.Init.OwnAddress1 = I2C_TARGET_ADDRESS << 1;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0U;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
-    Error_Handler();
-  }
-
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) {
-    Error_Handler();
-  }
-
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0U) != HAL_OK) {
-    Error_Handler();
-  }
-
-  HAL_NVIC_SetPriority(I2C1_IRQn, 2U, 0U);
-  HAL_NVIC_EnableIRQ(I2C1_IRQn);
 }
 
 /* --------------------------- TIM2 IRQ ------------------------------------ */
@@ -843,125 +1105,68 @@ void TIM2_IRQHandler(void) {
   __DMB();
 }
 
-/* ----------------------------- I2C --------------------------------------- */
+/* ----------------------------- RS-485 USART1 ---------------------------- */
 
-static void latch_i2c_error(void) {
-  const uint32_t saved_primask = __get_PRIMASK();
-  __disable_irq();
-
-  i2c_error_count++;
-  latched_status_flags |= REWARD_STATUS_I2C_ERROR_LATCHED;
-
-  if (saved_primask == 0U) {
-    __enable_irq();
-  }
-}
-
-void HAL_I2C_AddrCallback(I2C_HandleTypeDef *i2c, uint8_t transfer_direction,
-                          uint16_t address_match_code) {
-  (void)address_match_code;
-
-  if (i2c->Instance != I2C1) {
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *uart) {
+  if (uart->Instance != USART1) {
     return;
   }
 
-  if (transfer_direction == I2C_DIRECTION_TRANSMIT) {
-    i2c_rx_command = 0U;
-    i2c_command_rx_armed = true;
+  for (size_t index = 0U; index < sizeof(rs485_rx_block); ++index) {
+    rs485_rx_byte_count++;
+    rs485_consume_byte_from_isr(rs485_rx_block[index]);
+  }
 
-    if (HAL_I2C_Slave_Seq_Receive_IT(i2c, (uint8_t *)&i2c_rx_command, 1U,
-                                     I2C_FIRST_AND_LAST_FRAME) != HAL_OK) {
-      i2c_command_rx_armed = false;
-      latch_i2c_error();
-    }
+  if (HAL_UART_Receive_IT(&huart1, rs485_rx_block, sizeof(rs485_rx_block)) !=
+      HAL_OK) {
+    transport_error_count++;
+    latched_status_flags |= REWARD_STATUS_TRANSPORT_ERROR_LATCHED;
+  }
+}
 
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *uart) {
+  if (uart->Instance != USART1) {
     return;
   }
 
-  prepare_i2c_snapshot();
+  const uint32_t error = uart->ErrorCode;
 
-  if (HAL_I2C_Slave_Seq_Transmit_IT(i2c, i2c_tx_frame, REWARD_FRAME_SIZE,
-                                    I2C_FIRST_AND_LAST_FRAME) != HAL_OK) {
-    i2c_tx_frame_has_record = false;
-    latch_i2c_error();
+  if ((error & HAL_UART_ERROR_FE) != 0U) {
+    rs485_framing_error_count++;
   }
+
+  if ((error & HAL_UART_ERROR_NE) != 0U) {
+    rs485_noise_error_count++;
+  }
+
+  if ((error & HAL_UART_ERROR_ORE) != 0U) {
+    rs485_overrun_error_count++;
+  }
+
+  if ((error & HAL_UART_ERROR_PE) != 0U) {
+    rs485_parity_error_count++;
+  }
+
+  transport_error_count++;
+  latched_status_flags |= REWARD_STATUS_TRANSPORT_ERROR_LATCHED;
+
+  /*
+   * Discard any partial request. The magic-byte parser will resynchronise
+   * when reception resumes.
+   */
+  rs485_request_index = 0U;
+
+  __HAL_UART_CLEAR_OREFLAG(uart);
+  __HAL_UART_CLEAR_FEFLAG(uart);
+  __HAL_UART_CLEAR_NEFLAG(uart);
+  __HAL_UART_CLEAR_PEFLAG(uart);
+
+  (void)HAL_UART_Receive_IT(&huart1, rs485_rx_block, sizeof(rs485_rx_block));
 }
 
-void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *i2c) {
-  if (i2c->Instance == I2C1) {
-    complete_i2c_command_receive_from_isr(false);
-  }
-}
+void SysTick_Handler(void) { HAL_IncTick(); }
 
-void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *i2c) {
-  if ((i2c->Instance != I2C1) || !i2c_tx_frame_has_record) {
-    return;
-  }
-
-  const uint32_t saved_primask = __get_PRIMASK();
-  __disable_irq();
-
-  const bool popped =
-      pop_expected_capture_locked(i2c_tx_record_type, i2c_tx_record_ticks);
-
-  i2c_tx_frame_has_record = false;
-
-  if (!popped) {
-    latched_status_flags |= REWARD_STATUS_CLOCK_FAULT;
-  }
-
-  if (saved_primask == 0U) {
-    __enable_irq();
-  }
-}
-
-void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *i2c) {
-  if (i2c->Instance != I2C1) {
-    return;
-  }
-
-  if (i2c_command_rx_armed) {
-    if (i2c->XferCount == 0U) {
-      complete_i2c_command_receive_from_isr(true);
-    } else {
-      i2c_command_rx_armed = false;
-      latch_i2c_error();
-    }
-  }
-
-  if (HAL_I2C_EnableListen_IT(i2c) != HAL_OK) {
-    latch_i2c_error();
-  }
-}
-
-void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *i2c) {
-  if (i2c->Instance != I2C1) {
-    return;
-  }
-
-  const uint32_t error = HAL_I2C_GetError(i2c);
-
-  if ((error & HAL_I2C_ERROR_AF) != 0U) {
-    __HAL_I2C_CLEAR_FLAG(i2c, I2C_FLAG_AF);
-  }
-
-  if ((error & ~HAL_I2C_ERROR_AF) != 0U) {
-    i2c_tx_frame_has_record = false;
-    i2c_command_rx_armed = false;
-    latch_i2c_error();
-  }
-
-  if (HAL_I2C_GetState(i2c) == HAL_I2C_STATE_READY) {
-    if (HAL_I2C_EnableListen_IT(i2c) != HAL_OK) {
-      latch_i2c_error();
-    }
-  }
-}
-
-void I2C1_IRQHandler(void) {
-  HAL_I2C_EV_IRQHandler(&hi2c1);
-  HAL_I2C_ER_IRQHandler(&hi2c1);
-}
+void USART1_IRQHandler(void) { HAL_UART_IRQHandler(&huart1); }
 
 static void Error_Handler(void) {
   __disable_irq();
