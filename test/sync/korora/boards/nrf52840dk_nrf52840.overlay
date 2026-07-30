@@ -4,7 +4,7 @@
 / {
     zephyr,user {
         /* Korora hardware synchronization output to every Fairy. */
-        sync-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+        sync-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
 
         /* Shared external event input. */
         event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;

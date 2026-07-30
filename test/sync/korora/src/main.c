@@ -7,9 +7,8 @@
  * Concurrent timing paths:
  *
  *  1. fairy (STM32G071 over half-duplex RS-485 + hardware SYNC GPIO)
- *     TIMER2 COMPARE0 -> PPI -> GPIOTE SET
- *     TIMER2 COMPARE1 -> PPI -> GPIOTE CLR
- *
+ * TIMER2 COMPARE0 -> PPI -> GPIOTE CLR
+ * TIMER2 COMPARE1 -> PPI -> GPIOTE SET
  *  2. galapagos (nRF54L15 over BLE)
  *     Both controllers report Bluetooth connection-event anchor timestamps.
  *     galapagos sends its anchor in the same 40-byte frame used by the STM32.
@@ -490,8 +489,8 @@ static nrfx_timer_t korora_timer = NRFX_TIMER_INSTANCE(NRF_TIMER2);
 static nrfx_timer_t ttl_capture_timer = NRFX_TIMER_INSTANCE(NRF_TIMER3);
 static nrfx_gpiote_t *const korora_gpiote =
     &GPIOTE_NRFX_INST_BY_NODE(GPIOTE_NODE);
-static nrfx_gppi_handle_t korora_sync_rise_connection;
-static nrfx_gppi_handle_t korora_sync_fall_connection;
+static nrfx_gppi_handle_t korora_sync_assert_connection;
+static nrfx_gppi_handle_t korora_sync_release_connection;
 static uint8_t korora_sync_output_channel;
 static nrfx_gppi_handle_t korora_event_capture_connection;
 static uint8_t korora_event_input_channel;
@@ -3691,7 +3690,7 @@ static int korora_sync_output_init(void) {
   const nrfx_gpiote_task_config_t task_config = {
       .task_ch = korora_sync_output_channel,
       .polarity = NRF_GPIOTE_POLARITY_TOGGLE,
-      .init_val = NRF_GPIOTE_INITIAL_VALUE_LOW,
+      .init_val = NRF_GPIOTE_INITIAL_VALUE_HIGH,
   };
 
   error = nrfx_gpiote_output_configure(korora_gpiote, SYNC_OUTPUT_PIN,
@@ -3725,26 +3724,33 @@ static int korora_timer_init(void) {
   nrfx_timer_compare(&korora_timer, NRF_TIMER_CC_CHANNEL1,
                      KORORA_SYNC_PULSE_WIDTH_TICKS, false);
 
+  /*
+   * COMPARE0 marks the synchronization timestamp.
+   * Pull the Grove driver input low to begin the active-low pulse.
+   */
   error = nrfx_gppi_conn_alloc(
       nrfx_timer_compare_event_address_get(&korora_timer,
                                            NRF_TIMER_CC_CHANNEL0),
-      nrfx_gpiote_set_task_address_get(korora_gpiote, SYNC_OUTPUT_PIN),
-      &korora_sync_rise_connection);
+      nrfx_gpiote_clr_task_address_get(korora_gpiote, SYNC_OUTPUT_PIN),
+      &korora_sync_assert_connection);
   if (error != 0) {
     return error;
   }
 
+  /*
+   * Return the Grove driver input high after the configured pulse width.
+   */
   error = nrfx_gppi_conn_alloc(
       nrfx_timer_compare_event_address_get(&korora_timer,
                                            NRF_TIMER_CC_CHANNEL1),
-      nrfx_gpiote_clr_task_address_get(korora_gpiote, SYNC_OUTPUT_PIN),
-      &korora_sync_fall_connection);
+      nrfx_gpiote_set_task_address_get(korora_gpiote, SYNC_OUTPUT_PIN),
+      &korora_sync_release_connection);
   if (error != 0) {
     return error;
   }
 
-  nrfx_gppi_conn_enable(korora_sync_rise_connection);
-  nrfx_gppi_conn_enable(korora_sync_fall_connection);
+  nrfx_gppi_conn_enable(korora_sync_assert_connection);
+  nrfx_gppi_conn_enable(korora_sync_release_connection);
 
   nrfx_timer_clear(&korora_timer);
   nrfx_timer_enable(&korora_timer);

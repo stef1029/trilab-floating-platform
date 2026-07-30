@@ -4,10 +4,10 @@
  * Build: PlatformIO + STM32Cube HAL
  * Board: nucleo_g071rb
  *
- * RS-485 connections (THVD1410, powered from 3.3 V):
- *   PB6        ->  D   (USART1_TX)
- *   PB7        <-  R   (USART1_RX)
- *   PB5        ->  DE and /RE tied together
+ * RS-485 connections:
+ *   PC4 / D1    -> D   (USART1_TX)
+ *   PC5 / D0    <- R   (USART1_RX)
+ *   PB5 / D4    -> DE and /RE tied together
  *   A/B/GND    <-> Korora RS-485 transceiver A/B/GND
  *
  * Timing connections retained:
@@ -67,7 +67,7 @@
 #define REWARD_COMMAND_TOKEN_MASK 0x7FU
 
 #define FAIRY_RS485_ADDRESS 1U
-#define FAIRY_RS485_BAUD_RATE 460800U
+#define FAIRY_RS485_BAUD_RATE 460800
 #define FAIRY_RS485_REQUEST_MAGIC_0 0xA6U
 #define FAIRY_RS485_REQUEST_MAGIC_1 0x5AU
 #define FAIRY_RS485_RESPONSE_MAGIC_0 0xA6U
@@ -789,6 +789,22 @@ static void service_rs485_response(void) {
 
 /* ------------------------------ Main ------------------------------------- */
 
+static void RS485_Static_Low_Test(void) {
+  GPIO_InitTypeDef gpio = {0};
+
+  /*
+   * Set the output value before changing PC4 to GPIO output,
+   * avoiding a brief high pulse.
+   */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);
+
+  gpio.Pin = GPIO_PIN_4;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &gpio);
+}
+
 int main(void) {
   reset_cause = RCC->CSR;
 
@@ -854,8 +870,25 @@ static void GPIO_Init(void) {
 
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
 
-  gpio.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+  /*
+   * PA0 / TIM2_CH1:
+   * RS-485 receiver's normal logic output.
+   * Idle is high and the transported sync pulse is active-low.
+   */
+  gpio.Pin = GPIO_PIN_0;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_PULLUP;
+  gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  gpio.Alternate = GPIO_AF2_TIM2;
+  HAL_GPIO_Init(GPIOA, &gpio);
+
+  /*
+   * PA1 / TIM2_CH2:
+   * Existing local reward/event input, active-high.
+   */
+  gpio.Pin = GPIO_PIN_1;
   gpio.Mode = GPIO_MODE_AF_PP;
   gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -869,21 +902,24 @@ static void GPIO_Init(void) {
   gpio.Alternate = GPIO_AF1_USART2;
   HAL_GPIO_Init(GPIOA, &gpio);
 
-  /* PB6 = USART1_TX. */
-  gpio.Pin = GPIO_PIN_6;
+  /* Arduino D1: PC4 = USART1_TX. */
+  gpio.Pin = GPIO_PIN_4;
   gpio.Mode = GPIO_MODE_AF_PP;
   gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-  gpio.Alternate = GPIO_AF0_USART1;
-  HAL_GPIO_Init(GPIOB, &gpio);
+  gpio.Alternate = GPIO_AF1_USART1;
+  HAL_GPIO_Init(GPIOC, &gpio);
 
-  /* PB7 = USART1_RX. Pull up because THVD1410 R is high-Z while /RE is high. */
-  gpio.Pin = GPIO_PIN_7;
+  /*
+   * Arduino D0: PC5 = USART1_RX.
+   * Pull up because the THVD1410 R output is high-Z while /RE is high.
+   */
+  gpio.Pin = GPIO_PIN_5;
   gpio.Mode = GPIO_MODE_AF_PP;
   gpio.Pull = GPIO_PULLUP;
   gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-  gpio.Alternate = GPIO_AF0_USART1;
-  HAL_GPIO_Init(GPIOB, &gpio);
+  gpio.Alternate = GPIO_AF1_USART1;
+  HAL_GPIO_Init(GPIOC, &gpio);
 
   /* PB5 drives tied THVD1410 DE and /RE. Default to receive. */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
@@ -948,7 +984,7 @@ static void USART2_Init(void) {
   __HAL_RCC_USART2_CLK_ENABLE();
 
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200U;
+  huart2.Init.BaudRate = 460800U;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -996,14 +1032,24 @@ static void TIM2_Init(void) {
     Error_Handler();
   }
 
-  capture.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   capture.ICSelection = TIM_ICSELECTION_DIRECTTI;
   capture.ICPrescaler = TIM_ICPSC_DIV1;
-  capture.ICFilter = 4U;
+
+  /*
+   * Start with no digital filter while testing the RS-485 pulse path.
+   * A filter can be added later if real cable noise causes false captures.
+   */
+  capture.ICFilter = 0U;
+
+  /* Sync input: idle-high, active-low, timestamp the falling edge. */
+  capture.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
 
   if (HAL_TIM_IC_ConfigChannel(&htim2, &capture, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
+
+  /* Existing reward/event input remains active-high. */
+  capture.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
 
   if (HAL_TIM_IC_ConfigChannel(&htim2, &capture, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
