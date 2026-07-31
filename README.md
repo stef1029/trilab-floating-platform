@@ -1,11 +1,9 @@
 # Floating Platform Orienting System — Project Specification
 
-A head-fixed behavioural platform for studying sensory-guided spatial orienting in the mouse.
+A head-fixed behavioural platform for studying sensory-guided spatial orienting in mice.
 
-> **Status:** Greenfield design specification. This document defines the scientific intent,
-> design principles, and requirements for the system. It deliberately commits to *what* the
-> system must achieve and *why*, while leaving concrete engineering choices open where they
-> are not yet constrained by the science.
+> **Status:** Design specification and prototyping. This readme defines the scientific intent,
+> design principles, and requirements for the system.
 
 ---
 
@@ -19,13 +17,13 @@ its sensory and motor focus. Although subjectively effortless, orienting require
 nervous system to solve several hard computational problems at once:
 
 - **Coordinate-frame transformation.** Different senses encode space in incompatible
-  reference frames — vision in retinotopic coordinates, hearing in head-centred coordinates,
-  touch in body-centred coordinates — yet the motor system needs a single unified target.
+  reference frames (vision in retinotopic coordinates, hearing in head-centred coordinates,
+  touch in body-centred coordinates) yet the motor system needs a single unified target.
 - **Sensorimotor transformation.** A spatial estimate must be converted into a coordinated
   motor command spanning effectors with very different dynamics (fast, low-range eyes; slower,
   wider-range head; slow, widest-range body).
 - **Target selection.** When multiple stimuli compete, the system must commit to a single
-  target — the body cannot turn two ways at once.
+  target, the body cannot turn two ways at once.
 
 ### 1.2 The superior colliculus (SC)
 
@@ -112,8 +110,7 @@ trade-off.
   beneath it to produce orienting movements through its full natural range, with friction low
   enough that movement is effortless.
 - **F2 — Constrained degrees of freedom.** Platform motion is constrained to the behaviourally
-  meaningful axes (rotation; optionally fore/aft translation) and prevented in axes that add
-  uncontrolled variance.
+  meaningful axes (rotation, translation).
 - **F3 — Multi-target cueing.** Present discrete spatial cues at ≥4 (target: 6) locations
   distributed around the animal, with unambiguous angular separation.
 - **F4 — Multimodal cues.** Independently addressable **visual** (per-location LED) and
