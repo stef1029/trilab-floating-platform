@@ -7,8 +7,8 @@
 | Audio DAC                  | PA4       | A2                                  | CN8 pin 3                  |
 | Light-gate ADC             | PA6       | D12                                 | CN5 pin 5                  |
 | Valve PWM                  | PA8       | D7                                  | CN9 pin 8                  |
-| RS-485 TX                  | PA9       | D8                                  | CN5 pin 1                  |
-| RS-485 RX                  | PA10      | D2                                  | CN9 pin 3                  |
+| RS-485 TX                  | PC4       | D1                                  | CN5 pin 1                  |
+| RS-485 RX                  | PC5       | D0                                  | CN9 pin 3                  |
 | Optional RS-485 DE         | PA12      | —                                   | CN10 pin 12                |
 | RGB channel 3 / blue       | PB0       | D10                                 | CN5 pin 3                  |
 | RGB channel 1 / red        | PB4       | D5                                  | CN9 pin 6                  |

@@ -572,7 +572,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "jlcpcb/",
       "specctra_dsn": "",
       "vrml": ""
     },
@@ -696,7 +696,7 @@
         "uuid": "47741335-858b-474f-b1bb-4392dca6d0db"
       }
     ],
-    "used_designators": "U1-6,Q1-7,J1-7,C1-21,#PWR1-44,R1-23,JP1-2,#FLG1-3",
+    "used_designators": "#FLG1-3,JP1-2,R1-23,#PWR1-44,C1-21,J1-7,Q1-7,U1-6",
     "variants": []
   },
   "sheets": [
