@@ -7034,7 +7034,7 @@
 				)
 			)
 		)
-		(property "Value" "2N7002"
+		(property "Value" "2N7002PW"
 			(at 0 1.8 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -7558,7 +7558,7 @@
 				)
 			)
 		)
-		(property "Value" "2N7002"
+		(property "Value" "2N7002PW"
 			(at 0 1.8 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -9701,7 +9701,7 @@
 				)
 			)
 		)
-		(property "Value" "2N7002"
+		(property "Value" "2N7002PW"
 			(at 0 1.8 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -10705,7 +10705,7 @@
 				)
 			)
 		)
-		(property "Value" "2N7002"
+		(property "Value" "2N7002PW"
 			(at 0 1.8 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -13929,16 +13929,15 @@
 			)
 		)
 	)
-	(footprint "Capacitor_Tantalum_SMD:CP_EIA-7360-38_Kemet-E"
+	(footprint "Capacitor_Tantalum_SMD:CP_EIA-7343-43_Kemet-X"
 		(layer "F.Cu")
 		(uuid "fb89c669-3f89-476a-bfe3-76f8bc65c623")
 		(at 149.7 106.2 -90)
-		(descr "Tantalum Capacitor SMD Kemet-E (7360-38 Metric), IPC-7352 nominal, (Body size from: http://www.kemet.com/Lists/ProductCatalog/Attachments/253/KEM_TC101_STD.pdf)")
+		(descr "Tantalum Capacitor SMD Kemet-X (7343-43 Metric), IPC-7352 nominal, (Body size from: http://www.kemet.com/Lists/ProductCatalog/Attachments/253/KEM_TC101_STD.pdf)")
 		(tags "capacitor tantalum")
 		(property "Reference" "C18"
-			(at 0 -3.95 90)
+			(at 0 -3.1 270)
 			(layer "F.SilkS")
-			(hide yes)
 			(uuid "93c82299-c6f5-4c14-871a-548aa2716174")
 			(effects
 				(font
@@ -13948,9 +13947,8 @@
 			)
 		)
 		(property "Value" "470uF"
-			(at 0 3.95 90)
+			(at 0 3.1 270)
 			(layer "F.Fab")
-			(hide yes)
 			(uuid "94b8ff3a-e149-4646-a392-4ca5f1aef9ad")
 			(effects
 				(font
@@ -13960,7 +13958,7 @@
 			)
 		)
 		(property "Datasheet" "EEEFP1A471AP"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "1390e5e7-4633-4501-86f9-21eb9b783873")
@@ -13971,7 +13969,7 @@
 			)
 		)
 		(property "Description" "Polarized capacitor"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "F.Fab")
 			(hide yes)
 			(uuid "6f020702-6df3-4e76-9d32-9bfdae36fb2f")
@@ -13982,7 +13980,7 @@
 			)
 		)
 		(property "KiLib_Generator" "SMD_2terminal_chip_molded"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "F.SilkS")
 			(hide yes)
 			(uuid "d227fcfd-668e-4cae-9a8a-6240658b741d")
@@ -14006,18 +14004,18 @@
 		(attr smd)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
-			(start -4.415 3.11)
-			(end 3.65 3.11)
+			(start -4.415 2.26)
+			(end 3.65 2.26)
 			(stroke
 				(width 0.12)
 				(type solid)
 			)
 			(layer "F.SilkS")
-			(uuid "8695d205-76ad-400d-b7f2-fc2172d58303")
+			(uuid "c15e3e7e-9d21-4700-91df-1649c4e1f2de")
 		)
 		(fp_line
-			(start -4.415 -3.11)
-			(end -4.415 3.11)
+			(start -4.415 -2.26)
+			(end -4.415 2.26)
 			(stroke
 				(width 0.12)
 				(type solid)
@@ -14026,18 +14024,18 @@
 			(uuid "887b6ffa-d88b-4778-a7f1-b656c2527866")
 		)
 		(fp_line
-			(start 3.65 -3.11)
-			(end -4.415 -3.11)
+			(start 3.65 -2.26)
+			(end -4.415 -2.26)
 			(stroke
 				(width 0.12)
 				(type solid)
 			)
 			(layer "F.SilkS")
-			(uuid "c15e3e7e-9d21-4700-91df-1649c4e1f2de")
+			(uuid "8695d205-76ad-400d-b7f2-fc2172d58303")
 		)
 		(fp_rect
-			(start -4.41 -3.25)
-			(end 4.41 3.25)
+			(start -4.41 -2.4)
+			(end 4.41 2.4)
 			(stroke
 				(width 0.05)
 				(type solid)
@@ -14047,8 +14045,8 @@
 			(uuid "2e21c2c5-d1ce-46ae-8f1c-2cd12d2d9335")
 		)
 		(fp_line
-			(start -3.65 3)
-			(end 3.65 3)
+			(start -3.65 2.15)
+			(end 3.65 2.15)
 			(stroke
 				(width 0.1)
 				(type solid)
@@ -14057,18 +14055,8 @@
 			(uuid "6831845c-2f37-46b8-8856-c0170b4e6319")
 		)
 		(fp_line
-			(start 3.65 3)
-			(end 3.65 -3)
-			(stroke
-				(width 0.1)
-				(type solid)
-			)
-			(layer "F.Fab")
-			(uuid "db877652-1ca1-46c8-a5f6-3482931c8b0e")
-		)
-		(fp_line
-			(start -3.65 -2)
-			(end -3.65 3)
+			(start 3.65 2.15)
+			(end 3.65 -2.15)
 			(stroke
 				(width 0.1)
 				(type solid)
@@ -14077,18 +14065,18 @@
 			(uuid "fc23901a-b83b-4863-9443-ca54dddb9829")
 		)
 		(fp_line
-			(start -2.65 -3)
-			(end -3.65 -2)
+			(start -3.65 -1.15)
+			(end -3.65 2.15)
 			(stroke
 				(width 0.1)
 				(type solid)
 			)
 			(layer "F.Fab")
-			(uuid "f629cfb1-b7e5-4be8-b0f8-fd6d9b426c2e")
+			(uuid "db877652-1ca1-46c8-a5f6-3482931c8b0e")
 		)
 		(fp_line
-			(start 3.65 -3)
-			(end -2.65 -3)
+			(start -2.65 -2.15)
+			(end -3.65 -1.15)
 			(stroke
 				(width 0.1)
 				(type solid)
@@ -14096,8 +14084,18 @@
 			(layer "F.Fab")
 			(uuid "75f1bdc0-1bd6-4623-89d0-1fd6b14123a0")
 		)
+		(fp_line
+			(start 3.65 -2.15)
+			(end -2.65 -2.15)
+			(stroke
+				(width 0.1)
+				(type solid)
+			)
+			(layer "F.Fab")
+			(uuid "f629cfb1-b7e5-4be8-b0f8-fd6d9b426c2e")
+		)
 		(fp_text user "${REFERENCE}"
-			(at 0 0 90)
+			(at 0 0 270)
 			(layer "F.Fab")
 			(uuid "ba92f96b-78e6-41b2-a634-636d2d830c9d")
 			(effects
@@ -14109,7 +14107,7 @@
 		)
 		(pad "1" smd roundrect
 			(at -3.12 0 270)
-			(size 2.07 4.29)
+			(size 2.07 2.59)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(roundrect_rratio 0.120773)
 			(net "/VLOAD")
@@ -14118,7 +14116,7 @@
 		)
 		(pad "2" smd roundrect
 			(at 3.12 0 270)
-			(size 2.07 4.29)
+			(size 2.07 2.59)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(roundrect_rratio 0.120773)
 			(net "GND")
@@ -14126,7 +14124,7 @@
 			(uuid "53553920-b203-4134-bdbf-3a8c7a53a986")
 		)
 		(embedded_fonts no)
-		(model "${KICAD10_3DMODEL_DIR}/Capacitor_Tantalum_SMD.3dshapes/CP_EIA-7360-38_Kemet-E.step"
+		(model "${KICAD10_3DMODEL_DIR}/Capacitor_Tantalum_SMD.3dshapes/CP_EIA-7343-43_Kemet-X.step"
 			(offset
 				(xyz 0 0 0)
 			)
