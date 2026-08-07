@@ -12,6 +12,15 @@ from cycler import cycler
 
 REFERENCE_NODE = "korora"
 
+NODE_NAMES = {
+    "adelie": "Adelie",
+    "fairy": "Fairy",
+    "galapagos": "Galapagos",
+    "korora": "Korora",
+}
+
+_GENERATED_PLOTS: list[Path] = []
+
 
 # Poster palette: soft enough to feel pastel, dark enough to remain readable
 # when printed. The first colours are also used as Matplotlib's automatic
@@ -96,7 +105,13 @@ def apply_poster_theme() -> None:
 
 
 def pretty_node(node: str) -> str:
-    return node.replace("_", " ").strip().title()
+    """Return a stable, presentation-ready device name."""
+    return NODE_NAMES.get(node.casefold(), node.replace("_", " ").strip().title())
+
+
+def graph_title(node: str, measurement: str) -> str:
+    """Build every device-specific title using the same visual grammar."""
+    return f"{pretty_node(node)} · {measurement}"
 
 
 def add_stat_badge(
@@ -112,7 +127,7 @@ def add_stat_badge(
         y,
         text,
         transform=axis.transAxes,
-        ha="left",
+        ha="right" if x >= 0.5 else "left",
         va="top",
         color=PALETTE["ink"],
         fontsize=10.5,
@@ -124,6 +139,36 @@ def add_stat_badge(
             "alpha": 0.96,
         },
         zorder=8,
+    )
+
+
+def add_summary_badge(
+    axis: plt.Axes,
+    values: pd.Series | np.ndarray | list[float],
+    unit: str,
+    *,
+    signed: bool = False,
+    x: float = 0.98,
+    y: float = 0.96,
+) -> None:
+    """Show the same median, P95 and maximum summary on numeric plots."""
+    finite = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    finite = finite[np.isfinite(finite)]
+    if finite.empty:
+        return
+
+    percentile_values = finite.abs() if signed else finite
+    p95_label = "|P95|" if signed else "P95"
+    max_label = "|Max|" if signed else "Max"
+    add_stat_badge(
+        axis,
+        (
+            f"Median {finite.median():.3g} {unit}  •  "
+            f"{p95_label} {percentile_values.quantile(0.95):.3g} {unit}  •  "
+            f"{max_label} {percentile_values.max():.3g} {unit}"
+        ),
+        x=x,
+        y=y,
     )
 
 
@@ -165,6 +210,8 @@ def finish(
     axis: plt.Axes,
     path: Path,
     show: bool,
+    *,
+    bottom_margin: float = 0.0,
 ) -> None:
     style_axis(axis)
 
@@ -180,16 +227,52 @@ def finish(
         )
         legend.get_frame().set_linewidth(0.8)
 
-    figure.tight_layout(pad=1.1)
+    figure.tight_layout(pad=1.1, rect=(0.0, bottom_margin, 1.0, 1.0))
     figure.savefig(path)
 
     # SVG is ideal for posters: it stays perfectly sharp at any size and can
     # be edited in Illustrator, Inkscape, Affinity Designer, or PowerPoint.
     figure.savefig(path.with_suffix(".svg"))
+    _GENERATED_PLOTS.append(path)
 
     if show:
         plt.show()
     plt.close(figure)
+
+
+def write_plot_index(output: Path, plots: list[Path]) -> None:
+    """Write a compact, human-readable catalogue beside the plot files."""
+    descriptions = {
+        "cross_device_event_alignment.png": "Event timing offsets from Korora for every selected remote device",
+        "cross_device_event_error_by_node.png": "Cross-device event timing error distributions grouped by device",
+        "korora_reference_event_interval.png": "Spacing between consecutive Korora reference events",
+        "adelie_clock_sync_round_trip_time.png": "BLE clock synchronization latency excluding Korora processing time",
+        "adelie_clock_model_fit.png": "Rolling clock model fit error on Adelie",
+        "adelie_clock_rate_estimate.png": "Adelie clock rate error relative to nominal",
+        "adelie_clock_prediction_error.png": "One-step Adelie clock prediction error",
+        "adelie_command_round_trip_time.png": "End-to-end latency for Adelie commands",
+        "adelie_command_latency_by_stage.png": "Median command latency split by transport and processing stage",
+        "adelie_ble_direction_latency.png": "Estimated BLE latency in each direction",
+        "ttl_timing_components.png": "Generation, acquisition and end-to-end TTL timing components",
+        "ttl_timing_error_distribution.png": "Distribution of completed TTL end-to-end timing error",
+        "ttl_pulse_outcomes.png": "Counts of completed, timed-out and incomplete TTL pulses",
+        "ttl_timing_field_consistency.png": "Reported TTL timing fields checked against recomputed timestamps",
+    }
+    lines = [
+        "# Synchronization plot index",
+        "",
+        f"Generated {len(plots)} plots. Each plot is available as PNG and SVG.",
+        "",
+        "| Plot | Purpose |",
+        "| --- | --- |",
+    ]
+    for path in sorted(plots, key=lambda item: item.name):
+        description = descriptions.get(
+            path.name,
+            path.stem.replace("_", " ").capitalize(),
+        )
+        lines.append(f"| `{path.name}` | {description} |")
+    (output / "plot_index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def add_reset_markers(
@@ -201,14 +284,16 @@ def add_reset_markers(
     if diagnostics.empty or pairs.empty:
         return
     resets = diagnostics[
-        (diagnostics["node"] == node) & (diagnostics["record_type"] == "MODEL_RESET")
+        (diagnostics["node"] == node) & (
+            diagnostics["record_type"] == "MODEL_RESET")
     ]
     node_pairs = pairs[pairs["node"] == node]
     if resets.empty or node_pairs.empty:
         return
 
     pulse_to_time = (
-        node_pairs.drop_duplicates("pulse").set_index("pulse")["elapsed_s"].to_dict()
+        node_pairs.drop_duplicates("pulse").set_index("pulse")[
+            "elapsed_s"].to_dict()
     )
     first = True
     for pulse in pd.to_numeric(resets["pulse"], errors="coerce").dropna():
@@ -263,20 +348,28 @@ def plot_clock_rate(
             node_pairs["elapsed_s"],
             node_pairs["local_interval_error_ppm"],
             linewidth=1,
-            label="Measured interval error",
+            label="Measured anchor interval",
         )
     if not track.empty:
         axis.plot(
             track["elapsed_s"],
             -track["slope_ppm"],
             linewidth=1.4,
-            label="Model-estimated clock error",
+            label="Firmware clock model",
         )
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · relative clock-rate variation")
+    axis.set_title(graph_title(node, "Clock rate stability"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Clock error (ppm)")
-    finish(figure, axis, output / f"{safe_name(node)}_clock_rate.png", show)
+    axis.set_ylabel("Rate error (ppm)")
+    rate_error = (
+        -track["slope_ppm"]
+        if not track.empty
+        else node_pairs["local_interval_error_ppm"]
+    )
+    add_summary_badge(axis, rate_error, "ppm", signed=True)
+    finish(
+        figure, axis, output / f"{safe_name(node)}_clock_rate_stability.png", show
+    )
 
 
 def plot_rms(
@@ -293,7 +386,8 @@ def plot_rms(
         if not sync.empty
         else pd.DataFrame()
     )
-    fits = rolling[rolling["node"] == node] if not rolling.empty else pd.DataFrame()
+    fits = rolling[rolling["node"] ==
+                   node] if not rolling.empty else pd.DataFrame()
     if track.empty and fits.empty:
         return
 
@@ -303,28 +397,23 @@ def plot_rms(
             track["elapsed_s"],
             track["rms_us"],
             linewidth=1.4,
-            label="Firmware RMS",
+            label="Firmware fit error",
         )
-        median = float(track["rms_us"].median())
-        p95 = float(track["rms_us"].quantile(0.95))
-        axis.axhline(
-            median, linestyle="--", linewidth=1, label=f"Median: {median:.2f} us"
-        )
-        axis.axhline(p95, linestyle=":", linewidth=1, label=f"P95: {p95:.2f} us")
     if not fits.empty:
         axis.plot(
             fits["end_elapsed_s"],
             fits["rms_us"],
             linewidth=1,
             alpha=0.75,
-            label="Independent Python RMS",
+            label="Independent fit error",
         )
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · affine model fit error")
+    axis.set_title(graph_title(node, "Clock model fit"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("RMS residual (us)")
+    axis.set_ylabel("Fit error RMS (µs)")
     axis.set_ylim(bottom=0)
-    finish(figure, axis, output / f"{safe_name(node)}_rms.png", show)
+    add_summary_badge(axis, track["rms_us"] if not track.empty else fits["rms_us"], "µs")
+    finish(figure, axis, output / f"{safe_name(node)}_clock_model_fit.png", show)
 
 
 def plot_event_error(
@@ -350,15 +439,15 @@ def plot_event_error(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    median = float(data["error_us"].median())
-    abs_p95 = float(data["abs_error_us"].quantile(0.95))
-    axis.axhline(median, linestyle="--", linewidth=1, label=f"Median: {median:.2f} us")
-    axis.set_title(f"{pretty_node(node)} · converted external-event error")
-    axis.set_xlabel("Elapsed event time (s)")
-    axis.set_ylabel("Timestamp error (us)")
-    add_stat_badge(axis, f"P95 absolute  {abs_p95:.2f} us")
-    finish(figure, axis, output / f"{safe_name(node)}_event_error.png", show)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title(graph_title(node, "External event timing error"))
+    axis.set_xlabel("Event time (s)")
+    axis.set_ylabel("Timing error (µs)")
+    add_summary_badge(axis, data["error_us"], "µs", signed=True)
+    finish(
+        figure, axis, output / f"{safe_name(node)}_event_timing_error.png", show
+    )
 
 
 def plot_tracking_state(
@@ -396,13 +485,14 @@ def plot_tracking_state(
         alpha=0.28,
     )
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · clock-model availability")
+    axis.set_title(graph_title(node, "Clock synchronization state"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("State")
+    axis.set_ylabel("Synchronization state")
     axis.set_yticks([0, 1])
     axis.set_yticklabels(["Acquire", "Track"])
     axis.set_ylim(-0.15, 1.15)
-    finish(figure, axis, output / f"{safe_name(node)}_tracking_state.png", show)
+    finish(figure, axis, output /
+           f"{safe_name(node)}_clock_sync_state.png", show)
 
 
 def plot_prediction_histogram(
@@ -433,19 +523,16 @@ def plot_prediction_histogram(
         edgecolor="white",
         linewidth=0.75,
     )
-    median = float(residual.median())
     abs_p95 = float(np.percentile(np.abs(residual), 95))
-    axis.axvline(
-        median, linestyle="--", linewidth=1.2, label=f"Median: {median:.2f} us"
-    )
-    axis.axvline(
-        abs_p95, linestyle=":", linewidth=1.2, label=f"+/-P95: {abs_p95:.2f} us"
-    )
+    axis.axvline(float(residual.median()), linestyle="--", linewidth=1.2)
+    axis.axvline(abs_p95, linestyle=":", linewidth=1.2)
     axis.axvline(-abs_p95, linestyle=":", linewidth=1.2)
-    axis.set_title(f"{pretty_node(node)} · one-step prediction-error distribution")
-    axis.set_xlabel("Pre-fit residual (us)")
-    axis.set_ylabel("Observations")
-    finish(figure, axis, output / f"{safe_name(node)}_prediction_histogram.png", show)
+    axis.set_title(graph_title(node, "Clock prediction error distribution"))
+    axis.set_xlabel("Prediction error (µs)")
+    axis.set_ylabel("Samples")
+    add_summary_badge(axis, residual, "µs", signed=True)
+    finish(figure, axis, output /
+           f"{safe_name(node)}_clock_prediction_error_distribution.png", show)
 
 
 def plot_error_vs_transport(
@@ -454,7 +541,8 @@ def plot_error_vs_transport(
     output: Path,
     show: bool,
 ) -> None:
-    required = {"node", "is_gpio_event", "matched", "transport_age_us", "error_us"}
+    required = {"node", "is_gpio_event",
+                "matched", "transport_age_us", "error_us"}
     if events.empty or not required.issubset(events.columns):
         return
     data = events[
@@ -472,15 +560,17 @@ def plot_error_vs_transport(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
     corr = correlation(data, "transport_age_us", "error_us")
     if math.isfinite(corr):
         add_stat_badge(axis, f"Pearson r  {corr:.3f}", x=0.03, y=0.95)
-    axis.set_title(f"{pretty_node(node)} · event error versus transport age")
-    axis.set_xlabel("Transport age (us)")
-    axis.set_ylabel("Timestamp error (us)")
+    axis.set_title(graph_title(node, "Event timing error vs. delivery delay"))
+    axis.set_xlabel("Event delivery delay (µs)")
+    axis.set_ylabel("Timing error (µs)")
     finish(
-        figure, axis, output / f"{safe_name(node)}_event_error_vs_transport.png", show
+        figure, axis, output /
+        f"{safe_name(node)}_event_error_vs_delivery_delay.png", show
     )
 
 
@@ -505,17 +595,19 @@ def plot_prediction_error(
         data["elapsed_s"],
         data["prefit_residual_us"],
         linewidth=1,
-        label="One-step prediction error",
+        label="Prediction error",
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · one-step prediction error")
+    axis.set_title(graph_title(node, "Clock prediction error"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Pre-fit residual (us)")
+    axis.set_ylabel("Prediction error (µs)")
+    add_summary_badge(axis, data["prefit_residual_us"], "µs", signed=True)
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_prediction_error.png",
+        output / f"{safe_name(node)}_clock_prediction_error.png",
         show,
     )
 
@@ -554,18 +646,16 @@ def plot_instability_relationship(
         x_line,
         slope * x_line + intercept,
         linewidth=1.5,
-        label="Linear trend",
+        label="Trend",
     )
     add_stat_badge(axis, f"Pearson r  {corr:.3f}", x=0.03, y=0.95)
-    axis.set_title(
-        f"{pretty_node(node)} · model error versus short-term clock instability"
-    )
-    axis.set_xlabel("Interval-rate standard deviation within window (ppm)")
-    axis.set_ylabel("Affine-fit RMS residual (us)")
+    axis.set_title(graph_title(node, "Clock stability vs. model fit"))
+    axis.set_xlabel("Short-term clock instability (ppm)")
+    axis.set_ylabel("Fit error RMS (µs)")
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_instability_vs_rms.png",
+        output / f"{safe_name(node)}_clock_stability_vs_model_fit.png",
         show,
     )
 
@@ -591,17 +681,19 @@ def plot_model_step(
         data["elapsed_s"],
         data["model_step_us"],
         linewidth=1,
-        label="Candidate model difference",
+        label="Model adjustment",
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · rolling model update difference")
+    axis.set_title(graph_title(node, "Clock model adjustment"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Model step at newest point (us)")
+    axis.set_ylabel("Adjustment at latest sample (µs)")
+    add_summary_badge(axis, data["model_step_us"], "µs", signed=True)
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_model_step.png",
+        output / f"{safe_name(node)}_clock_model_adjustment.png",
         show,
     )
 
@@ -615,7 +707,8 @@ def plot_transport_age(
 ) -> None:
     if pairs.empty:
         return
-    data = pairs[pairs["node"] == node].dropna(subset=["elapsed_s", "transport_age_us"])
+    data = pairs[pairs["node"] == node].dropna(
+        subset=["elapsed_s", "transport_age_us"])
     if data.empty:
         return
 
@@ -624,16 +717,17 @@ def plot_transport_age(
         data["elapsed_s"],
         data["transport_age_us"],
         s=12,
-        label="Transport age",
+        label="Delivery delay",
     )
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · synchronization timestamp transport age")
+    axis.set_title(graph_title(node, "Synchronization record delivery delay"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Age (us)")
+    axis.set_ylabel("Delivery delay (µs)")
+    add_summary_badge(axis, data["transport_age_us"], "µs")
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_sync_transport_age.png",
+        output / f"{safe_name(node)}_sync_record_delivery_delay.png",
         show,
     )
 
@@ -656,16 +750,17 @@ def plot_report_interval(
         data["elapsed_s"],
         data["report_interval_ms"],
         s=12,
-        label="Interval between received anchor pairs",
+        label="Received synchronization interval",
     )
     add_reset_markers(axis, node, diagnostics, pairs)
-    axis.set_title(f"{pretty_node(node)} · anchor report spacing")
+    axis.set_title(graph_title(node, "Synchronization record interval"))
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Report interval (ms)")
+    axis.set_ylabel("Received interval (ms)")
+    add_summary_badge(axis, data["report_interval_ms"], "ms")
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_report_interval.png",
+        output / f"{safe_name(node)}_sync_record_interval.png",
         show,
     )
 
@@ -698,28 +793,18 @@ def plot_event_error_histogram(
         edgecolor="white",
         linewidth=0.75,
     )
-    median = float(data.median())
     abs_p95 = float(np.percentile(np.abs(data), 95))
-    axis.axvline(
-        median,
-        linestyle="--",
-        linewidth=1.2,
-        label=f"Median: {median:.2f} us",
-    )
-    axis.axvline(
-        abs_p95,
-        linestyle=":",
-        linewidth=1.2,
-        label=f"+/-P95 absolute: {abs_p95:.2f} us",
-    )
+    axis.axvline(float(data.median()), linestyle="--", linewidth=1.2)
+    axis.axvline(abs_p95, linestyle=":", linewidth=1.2)
     axis.axvline(-abs_p95, linestyle=":", linewidth=1.2)
-    axis.set_title(f"{pretty_node(node)} · external-event error distribution")
-    axis.set_xlabel("Converted timestamp error (us)")
+    axis.set_title(graph_title(node, "External event timing error distribution"))
+    axis.set_xlabel("Timing error (µs)")
     axis.set_ylabel("Events")
+    add_summary_badge(axis, data, "µs", signed=True)
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_event_error_histogram.png",
+        output / f"{safe_name(node)}_event_timing_error_distribution.png",
         show,
     )
 
@@ -745,7 +830,7 @@ def plot_event_transport_age(
     if not timed.empty:
         data = timed
         x_column = "elapsed_s"
-        x_label = "Elapsed event time (s)"
+        x_label = "Event time (s)"
     else:
         x_column = "source_line"
         x_label = "Log line"
@@ -759,13 +844,14 @@ def plot_event_transport_age(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.set_title(f"{pretty_node(node)} · external-event transport age")
+    axis.set_title(graph_title(node, "External event delivery delay"))
     axis.set_xlabel(x_label)
-    axis.set_ylabel("Transport age (us)")
+    axis.set_ylabel("Delivery delay (µs)")
+    add_summary_badge(axis, data["transport_age_us"], "µs")
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_event_transport_age.png",
+        output / f"{safe_name(node)}_event_delivery_delay.png",
         show,
     )
 
@@ -789,18 +875,18 @@ def plot_event_error_plus_transport(
         data["elapsed_s"],
         data["error_plus_transport_us"],
         s=14,
-        label="error + transport age",
+        label="Timing error + delivery delay",
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    axis.set_title(
-        f"{pretty_node(node)} · event error after adding transport-age diagnostic"
-    )
-    axis.set_xlabel("Elapsed event time (s)")
-    axis.set_ylabel("error + transport age (us)")
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title(graph_title(node, "Received event timing offset"))
+    axis.set_xlabel("Event time (s)")
+    axis.set_ylabel("Timing error + delivery delay (µs)")
+    add_summary_badge(axis, data["error_plus_transport_us"], "µs", signed=True)
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_event_error_plus_transport.png",
+        output / f"{safe_name(node)}_received_event_timing_offset.png",
         show,
     )
 
@@ -840,7 +926,7 @@ def plot_event_state(
         color=PALETTE["lilac"],
         alpha=0.28,
     )
-    axis.set_title(f"{pretty_node(node)} · external-event conversion availability")
+    axis.set_title(graph_title(node, "External event synchronization state"))
     axis.set_xlabel("Log line")
     axis.set_ylabel("State")
     axis.set_yticks([0, 1])
@@ -849,7 +935,7 @@ def plot_event_state(
     finish(
         figure,
         axis,
-        output / f"{safe_name(node)}_event_state.png",
+        output / f"{safe_name(node)}_event_sync_state.png",
         show,
     )
 
@@ -883,13 +969,15 @@ def plot_event_alignment(
             alpha=0.74,
             edgecolors="white",
             linewidths=0.45,
-            label=str(node),
+            label=pretty_node(str(node)),
         )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    axis.set_title("External-event alignment relative to Korora")
-    axis.set_xlabel("Matched Korora event ID")
-    axis.set_ylabel("Converted timestamp error (us)")
-    finish(figure, axis, output / "remote_event_alignment.png", show)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title("Cross-device event alignment")
+    axis.set_xlabel("Matched Korora event number")
+    axis.set_ylabel("Timing offset from Korora (µs)")
+    add_summary_badge(axis, data["error_us"], "µs", signed=True)
+    finish(figure, axis, output / "cross_device_event_alignment.png", show)
 
 
 def plot_event_error_distribution(
@@ -902,21 +990,33 @@ def plot_event_error_distribution(
         return
     groups: list[np.ndarray] = []
     labels: list[str] = []
+    summary_rows: list[list[str]] = []
     for node in sorted(selected_nodes - {REFERENCE_NODE, "adelie"}):
         values = pd.to_numeric(
             events.loc[
-                (events["node"] == node) & events["is_gpio_event"] & events["matched"],
+                (events["node"] ==
+                 node) & events["is_gpio_event"] & events["matched"],
                 "error_us",
             ],
             errors="coerce",
         ).dropna()
         if not values.empty:
-            groups.append(values.to_numpy())
+            samples = values.to_numpy()
+            absolute_samples = np.abs(samples)
+            groups.append(samples)
             labels.append(node)
+            summary_rows.append(
+                [
+                    f"{len(samples):,}",
+                    f"{np.median(samples):.3g}",
+                    f"{np.percentile(absolute_samples, 95):.3g}",
+                    f"{np.max(absolute_samples):.3g}",
+                ]
+            )
     if not groups:
         return
 
-    figure, axis = plt.subplots(figsize=(8.5, 5))
+    figure, axis = plt.subplots(figsize=(max(8.5, 1.4 * len(groups) + 5.5), 6.2))
     axis.boxplot(
         groups,
         tick_labels=[pretty_node(label) for label in labels],
@@ -934,11 +1034,39 @@ def plot_event_error_distribution(
             "alpha": 0.65,
         },
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    axis.set_title("External-event error distribution by remote node")
-    axis.set_xlabel("Node")
-    axis.set_ylabel("Timestamp error (us)")
-    finish(figure, axis, output / "remote_event_error_distribution.png", show)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title("Cross-device event timing error by node")
+    axis.set_ylabel("Timing error (µs)")
+    table = axis.table(
+        cellText=summary_rows,
+        rowLabels=[pretty_node(label) for label in labels],
+        colLabels=["n", "Median (µs)", "|P95| (µs)", "|Max| (µs)"],
+        cellLoc="center",
+        rowLoc="center",
+        bbox=[0.08, -0.42, 0.9, 0.26],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(9.5)
+    for (row, column), cell in table.get_celld().items():
+        cell.set_edgecolor(PALETTE["grid"])
+        cell.set_linewidth(0.8)
+        cell.set_text_props(color=PALETTE["ink"])
+        if row == 0:
+            cell.set_facecolor("#F2EAFB")
+            cell.set_text_props(weight="semibold")
+        elif column == -1:
+            cell.set_facecolor(PALETTE["paper"])
+            cell.set_text_props(weight="semibold")
+        else:
+            cell.set_facecolor(PALETTE["panel"])
+    finish(
+        figure,
+        axis,
+        output / "cross_device_event_error_by_node.png",
+        show,
+        bottom_margin=0.23,
+    )
 
 
 def plot_reference_event_spacing(
@@ -966,10 +1094,11 @@ def plot_reference_event_spacing(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.set_title("Korora reference-event spacing")
-    axis.set_xlabel("Reference-event interval index")
+    axis.set_title("Korora · Reference event interval")
+    axis.set_xlabel("Reference event interval number")
     axis.set_ylabel("Interval (ms)")
-    finish(figure, axis, output / "korora_reference_event_spacing.png", show)
+    add_summary_badge(axis, spacing_ms, "ms")
+    finish(figure, axis, output / "korora_reference_event_interval.png", show)
 
 
 def plot_adelie_network_rtt(
@@ -992,14 +1121,11 @@ def plot_adelie_network_rtt(
         edgecolors="white",
         linewidths=0.45,
     )
-    median = float(data["network_rtt_us"].median())
-    p95 = float(data["network_rtt_us"].quantile(0.95))
-    axis.axhline(median, linestyle="--", linewidth=1, label=f"Median: {median:.1f} us")
-    axis.axhline(p95, linestyle=":", linewidth=1, label=f"P95: {p95:.1f} us")
-    axis.set_title("Adelie: NTP-style BLE clock-exchange RTT")
+    axis.set_title("Adelie · BLE clock sync round-trip time")
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Network RTT excluding Korora processing (us)")
-    finish(figure, axis, output / "adelie_clock_network_rtt.png", show)
+    axis.set_ylabel("Round-trip time excluding Korora processing (µs)")
+    add_summary_badge(axis, data["network_rtt_us"], "µs")
+    finish(figure, axis, output / "adelie_clock_sync_round_trip_time.png", show)
 
 
 def plot_adelie_model_rms(
@@ -1015,15 +1141,12 @@ def plot_adelie_model_rms(
 
     figure, axis = plt.subplots(figsize=(11, 5))
     axis.plot(data["end_elapsed_s"], data["rms_us"], linewidth=1.3)
-    median = float(data["rms_us"].median())
-    p95 = float(data["rms_us"].quantile(0.95))
-    axis.axhline(median, linestyle="--", linewidth=1, label=f"Median: {median:.1f} us")
-    axis.axhline(p95, linestyle=":", linewidth=1, label=f"P95: {p95:.1f} us")
-    axis.set_title("Adelie: rolling 16-point affine-model RMS")
+    axis.set_title("Adelie · Clock model fit")
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("RMS residual (us)")
+    axis.set_ylabel("Fit error RMS (µs)")
     axis.set_ylim(bottom=0)
-    finish(figure, axis, output / "adelie_clock_model_rms.png", show)
+    add_summary_badge(axis, data["rms_us"], "µs")
+    finish(figure, axis, output / "adelie_clock_model_fit.png", show)
 
 
 def plot_adelie_slope_error(
@@ -1039,11 +1162,13 @@ def plot_adelie_slope_error(
 
     figure, axis = plt.subplots(figsize=(11, 5))
     axis.plot(data["end_elapsed_s"], data["slope_error_ppm"], linewidth=1.2)
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    axis.set_title("Adelie: rolling clock-rate estimate")
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title("Adelie · Clock rate estimate")
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Slope error from nominal (ppm)")
-    finish(figure, axis, output / "adelie_clock_slope_error.png", show)
+    axis.set_ylabel("Rate error (ppm)")
+    add_summary_badge(axis, data["slope_error_ppm"], "ppm", signed=True)
+    finish(figure, axis, output / "adelie_clock_rate_estimate.png", show)
 
 
 def plot_adelie_prediction_error(
@@ -1066,12 +1191,12 @@ def plot_adelie_prediction_error(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    abs_p95 = float(data["prediction_error_us"].abs().quantile(0.95))
-    add_stat_badge(axis, f"P95 absolute  {abs_p95:.1f} us")
-    axis.set_title("Adelie: one-step clock-model prediction error")
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title("Adelie · Clock prediction error")
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Prediction error (us)")
+    axis.set_ylabel("Prediction error (µs)")
+    add_summary_badge(axis, data["prediction_error_us"], "µs", signed=True)
     finish(figure, axis, output / "adelie_clock_prediction_error.png", show)
 
 
@@ -1095,12 +1220,11 @@ def plot_adelie_command_rtt(
         edgecolors="white",
         linewidths=0.45,
     )
-    median = float(data["total_rtt_us"].median())
-    axis.axhline(median, linestyle="--", linewidth=1, label=f"Median: {median:.1f} us")
-    axis.set_title("Adelie command end-to-end RTT")
-    axis.set_xlabel("Command sequence")
-    axis.set_ylabel("Laptop send to result notification (us)")
-    finish(figure, axis, output / "adelie_command_total_rtt.png", show)
+    axis.set_title("Adelie · Command round-trip time")
+    axis.set_xlabel("Command number")
+    axis.set_ylabel("End-to-end latency (µs)")
+    add_summary_badge(axis, data["total_rtt_us"], "µs")
+    finish(figure, axis, output / "adelie_command_round_trip_time.png", show)
 
 
 def plot_adelie_command_breakdown(
@@ -1112,13 +1236,13 @@ def plot_adelie_command_breakdown(
         return
 
     stages = [
-        ("BLE down (est.)", "ble_down_est_us"),
-        ("Korora queue", "korora_queue_to_i2c_us"),
-        ("I2C down", "i2c_down_us"),
-        ("Fairy action", "fairy_action_us"),
-        ("I2C up + poll", "i2c_up_and_poll_us"),
-        ("Korora post-ACK", "korora_post_ack_us"),
-        ("BLE up (est.)", "ble_up_est_us"),
+        ("BLE to Korora", "ble_down_est_us"),
+        ("Korora command queue", "korora_queue_to_i2c_us"),
+        ("I²C to Fairy", "i2c_down_us"),
+        ("Fairy processing", "fairy_action_us"),
+        ("I²C response", "i2c_up_and_poll_us"),
+        ("Korora result handling", "korora_post_ack_us"),
+        ("BLE to Adelie", "ble_up_est_us"),
     ]
     labels: list[str] = []
     medians: list[float] = []
@@ -1138,7 +1262,8 @@ def plot_adelie_command_breakdown(
     bars = axis.bar(
         positions,
         medians,
-        color=[SERIES_COLOURS[index % len(SERIES_COLOURS)] for index in positions],
+        color=[SERIES_COLOURS[index % len(SERIES_COLOURS)]
+               for index in positions],
         edgecolor="white",
         linewidth=0.8,
     )
@@ -1152,10 +1277,10 @@ def plot_adelie_command_breakdown(
     )
     axis.set_xticks(positions)
     axis.set_xticklabels(labels, rotation=30, ha="right")
-    axis.set_title("Adelie command latency breakdown (median)")
-    axis.set_xlabel("Stage")
-    axis.set_ylabel("Latency (us)")
-    finish(figure, axis, output / "adelie_command_breakdown.png", show)
+    axis.set_title("Adelie · Median command latency by stage")
+    axis.set_xlabel("Command stage")
+    axis.set_ylabel("Median latency (µs)")
+    finish(figure, axis, output / "adelie_command_latency_by_stage.png", show)
 
 
 def plot_adelie_ble_directions(
@@ -1180,11 +1305,12 @@ def plot_adelie_ble_directions(
     upper = float(max(data.max()))
     if upper > lower:
         guide = np.linspace(lower, upper, 100)
-        axis.plot(guide, guide, linestyle="--", linewidth=1, label="equal delay")
-    axis.set_title("Adelie BLE one-way delay estimates")
-    axis.set_xlabel("Adelie to Korora estimate (us)")
-    axis.set_ylabel("Korora to Adelie estimate (us)")
-    finish(figure, axis, output / "adelie_ble_direction_comparison.png", show)
+        axis.plot(guide, guide, linestyle="--",
+                  linewidth=1, label="Equal latency")
+    axis.set_title("Adelie · BLE direction latency comparison")
+    axis.set_xlabel("Adelie → Korora latency (µs)")
+    axis.set_ylabel("Korora → Adelie latency (µs)")
+    finish(figure, axis, output / "adelie_ble_direction_latency.png", show)
 
 
 def plot_ttl_error_components(
@@ -1195,7 +1321,8 @@ def plot_ttl_error_components(
     if ttl_pulses.empty:
         return
     data = ttl_pulses[ttl_pulses["completed"]].dropna(
-        subset=["elapsed_s", "generation_error_us", "wire_offset_us", "total_error_us"]
+        subset=["elapsed_s", "generation_error_us",
+                "wire_offset_us", "total_error_us"]
     )
     if data.empty:
         return
@@ -1208,7 +1335,7 @@ def plot_ttl_error_components(
         alpha=0.75,
         edgecolors="white",
         linewidths=0.45,
-        label="Generation error",
+        label="Korora generation error",
     )
     axis.scatter(
         data["elapsed_s"],
@@ -1217,7 +1344,7 @@ def plot_ttl_error_components(
         alpha=0.75,
         edgecolors="white",
         linewidths=0.45,
-        label="Generated to acquired offset",
+        label="Acquisition offset",
     )
     axis.scatter(
         data["elapsed_s"],
@@ -1226,16 +1353,15 @@ def plot_ttl_error_components(
         alpha=0.82,
         edgecolors="white",
         linewidths=0.5,
-        label="End to end error",
+        label="End-to-end timing error",
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    median = float(data["total_error_us"].median())
-    abs_p95 = float(data["total_error_us"].abs().quantile(0.95))
-    add_stat_badge(axis, f"Total median  {median:.3f} us   |   P95 abs  {abs_p95:.3f} us")
-    axis.set_title("Scheduled TTL pulse timing error")
-    axis.set_xlabel("Elapsed target time (s)")
-    axis.set_ylabel("Error or offset (us)")
-    finish(figure, axis, output / "ttl_error_components.png", show)
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    add_summary_badge(axis, data["total_error_us"], "µs", signed=True)
+    axis.set_title("Scheduled TTL · Timing components")
+    axis.set_xlabel("Scheduled time (s)")
+    axis.set_ylabel("Timing error or offset (µs)")
+    finish(figure, axis, output / "ttl_timing_components.png", show)
 
 
 def plot_ttl_total_error_histogram(
@@ -1262,25 +1388,15 @@ def plot_ttl_total_error_histogram(
         edgecolor="white",
         linewidth=0.75,
     )
-    median = float(values.median())
     abs_p95 = float(values.abs().quantile(0.95))
-    axis.axvline(
-        median,
-        linestyle="--",
-        linewidth=1.2,
-        label=f"Median: {median:.3f} us",
-    )
-    axis.axvline(
-        abs_p95,
-        linestyle=":",
-        linewidth=1.2,
-        label=f"+/− P95 absolute: {abs_p95:.3f} us",
-    )
+    axis.axvline(float(values.median()), linestyle="--", linewidth=1.2)
+    axis.axvline(abs_p95, linestyle=":", linewidth=1.2)
     axis.axvline(-abs_p95, linestyle=":", linewidth=1.2)
-    axis.set_title("Scheduled TTL end to end error distribution")
-    axis.set_xlabel("Acquired time minus target time (us)")
+    axis.set_title("Scheduled TTL · End-to-end timing error")
+    axis.set_xlabel("Acquired time − scheduled time (µs)")
     axis.set_ylabel("Pulses")
-    finish(figure, axis, output / "ttl_total_error_histogram.png", show)
+    add_summary_badge(axis, values, "µs", signed=True)
+    finish(figure, axis, output / "ttl_timing_error_distribution.png", show)
 
 
 def plot_ttl_outcomes(
@@ -1301,7 +1417,8 @@ def plot_ttl_outcomes(
     bars = axis.bar(
         positions,
         counts.to_numpy(),
-        color=[SERIES_COLOURS[index % len(SERIES_COLOURS)] for index in positions],
+        color=[SERIES_COLOURS[index % len(SERIES_COLOURS)]
+               for index in positions],
         edgecolor="white",
         linewidth=0.8,
     )
@@ -1315,10 +1432,10 @@ def plot_ttl_outcomes(
     )
     axis.set_xticks(positions)
     axis.set_xticklabels(["Result", "Timeout", "Incomplete"])
-    axis.set_title("Scheduled TTL test outcomes")
+    axis.set_title("Scheduled TTL · Pulse outcomes")
     axis.set_xlabel("Outcome")
     axis.set_ylabel("Pulses")
-    finish(figure, axis, output / "ttl_outcomes.png", show)
+    finish(figure, axis, output / "ttl_pulse_outcomes.png", show)
 
 
 def plot_ttl_error_consistency(
@@ -1344,25 +1461,26 @@ def plot_ttl_error_consistency(
         data["elapsed_s"],
         data["generation_error_consistency_ns"],
         linewidth=1.1,
-        label="Generation field",
+        label="Generation error",
     )
     axis.plot(
         data["elapsed_s"],
         data["wire_offset_consistency_ns"],
         linewidth=1.1,
-        label="Wire offset field",
+        label="Acquisition offset",
     )
     axis.plot(
         data["elapsed_s"],
         data["total_error_consistency_ns"],
         linewidth=1.1,
-        label="Total error field",
+        label="End-to-end error",
     )
-    axis.axhline(0, color=PALETTE["muted"], linewidth=1.15, alpha=0.72, zorder=1)
-    axis.set_title("TTL reported error fields versus timestamp recomputation")
-    axis.set_xlabel("Elapsed target time (s)")
+    axis.axhline(0, color=PALETTE["muted"],
+                 linewidth=1.15, alpha=0.72, zorder=1)
+    axis.set_title("Scheduled TTL · Timing field consistency")
+    axis.set_xlabel("Scheduled time (s)")
     axis.set_ylabel("Reported minus recomputed (ns)")
-    finish(figure, axis, output / "ttl_error_consistency.png", show)
+    finish(figure, axis, output / "ttl_timing_field_consistency.png", show)
 
 
 def generate_plots(
@@ -1375,7 +1493,7 @@ def generate_plots(
     show: bool,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    before = set(output_dir.glob("*.png"))
+    _GENERATED_PLOTS.clear()
 
     pairs = load_csv(analysis_dir / "pairs_derived.csv")
     sync = load_csv(analysis_dir / "sync_derived.csv")
@@ -1403,7 +1521,8 @@ def generate_plots(
     if node_selection == "all":
         selected = set(available_nodes)
     else:
-        selected = {item.strip() for item in node_selection.split(",") if item.strip()}
+        selected = {item.strip()
+                    for item in node_selection.split(",") if item.strip()}
         missing = selected - available_nodes
         if missing:
             raise ValueError(
@@ -1424,8 +1543,10 @@ def generate_plots(
             # Restore the original engineering plot set for remote nodes only.
             # Korora remains available as the reference in combined plots, but
             # does not get meaningless zero-error or identity-model plots.
-            plot_tracking_state(node, sync, diagnostics, pairs, output_dir, show)
-            plot_prediction_error(node, sync, diagnostics, pairs, output_dir, show)
+            plot_tracking_state(node, sync, diagnostics,
+                                pairs, output_dir, show)
+            plot_prediction_error(node, sync, diagnostics,
+                                  pairs, output_dir, show)
             plot_prediction_histogram(node, sync, output_dir, show)
             plot_instability_relationship(node, rolling, output_dir, show)
             plot_model_step(node, sync, diagnostics, pairs, output_dir, show)
@@ -1437,7 +1558,8 @@ def generate_plots(
             plot_error_vs_transport(node, events, output_dir, show)
             plot_event_error_plus_transport(node, events, output_dir, show)
         else:
-            node_sync = sync[sync["node"] == node] if not sync.empty else pd.DataFrame()
+            node_sync = sync[sync["node"] ==
+                             node] if not sync.empty else pd.DataFrame()
             node_diagnostics = (
                 diagnostics[diagnostics["node"] == node]
                 if not diagnostics.empty
@@ -1452,7 +1574,8 @@ def generate_plots(
                 not node_diagnostics.empty
                 and (node_diagnostics["record_type"] == "MODEL_RESET").any()
             ):
-                plot_tracking_state(node, sync, diagnostics, pairs, output_dir, show)
+                plot_tracking_state(node, sync, diagnostics,
+                                    pairs, output_dir, show)
 
             data = (
                 events[
@@ -1474,7 +1597,8 @@ def generate_plots(
     non_reference_selected = selected - {REFERENCE_NODE, "adelie"}
     if non_reference_selected:
         plot_event_alignment(events, output_dir, show, non_reference_selected)
-        plot_event_error_distribution(events, output_dir, show, non_reference_selected)
+        plot_event_error_distribution(
+            events, output_dir, show, non_reference_selected)
 
     if REFERENCE_NODE in selected and profile == "full":
         plot_reference_event_spacing(events, output_dir, show)
@@ -1505,13 +1629,17 @@ def generate_plots(
         if profile == "full":
             plot_adelie_ble_directions(adelie_commands, output_dir, show)
 
-    after = set(output_dir.glob("*.png"))
-    return sorted(after - before)
+    generated = sorted(set(_GENERATED_PLOTS))
+    write_plot_index(output_dir, generated)
+    return generated
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Save poster-ready Korora and Adelie synchronization plots as PNG and SVG."
+        description=(
+            "Create poster-ready synchronization, command-latency, and TTL "
+            "timing plots as PNG and SVG."
+        )
     )
     parser.add_argument("--parsed", type=Path, default=Path("parsed"))
     parser.add_argument("--analysis", type=Path, default=Path("analysis"))
@@ -1530,15 +1658,14 @@ def parse_args() -> argparse.Namespace:
         choices=["curated", "expanded", "full"],
         default="expanded",
         help=(
-            "curated is compact; expanded restores the original remote-node "
-            "diagnostics without Korora-only plots; full also adds reference "
-            "diagnostics"
+            "curated generates the core report; expanded adds detailed remote-device "
+            "diagnostics; full also includes Korora reference diagnostics"
         ),
     )
     parser.add_argument(
         "--show",
         action="store_true",
-        help="display plots in addition to saving PNG files",
+        help="display plots after saving the PNG and SVG files",
     )
     return parser.parse_args()
 
@@ -1557,8 +1684,8 @@ def main() -> None:
     except ValueError as error:
         raise SystemExit(str(error)) from error
 
-    print(f"Poster plots written to: {args.output} (PNG + SVG)")
-    print(f"New plot files: {len(created)}")
+    print(f"Synchronization plots written to: {args.output} (PNG + SVG)")
+    print(f"Plot files: {len(created)}")
 
 
 if __name__ == "__main__":

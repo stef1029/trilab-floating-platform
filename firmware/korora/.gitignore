@@ -1,0 +1,12 @@
+# Zephyr and west build output
+build/
+zephyr/
+twister-out/
+*.hex
+*.bin
+*.elf
+*.map
+
+# Local editor files
+.vscode/
+.idea/

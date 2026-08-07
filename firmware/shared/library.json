@@ -1,0 +1,9 @@
+{
+	"name": "fairy_shared",
+	"version": "3.0.0",
+	"build": {
+		"includeDir": "include",
+		"srcDir": "src",
+		"srcFilter": ["+<*>", "-<sdc_anchor_report.c>"]
+	}
+}

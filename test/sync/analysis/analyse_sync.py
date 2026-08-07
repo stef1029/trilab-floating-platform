@@ -134,12 +134,14 @@ def derive_pairs(
 
     pairs["local_interval_error_us"] = np.nan
     pairs.loc[valid, "local_interval_error_us"] = (
-        pairs.loc[valid, "local_interval_s"] - pairs.loc[valid, "hub_interval_s"]
+        pairs.loc[valid, "local_interval_s"] -
+        pairs.loc[valid, "hub_interval_s"]
     ) * 1e6
 
     pairs["local_interval_error_ppm"] = np.nan
     pairs.loc[valid, "local_interval_error_ppm"] = (
-        pairs.loc[valid, "local_interval_s"] / pairs.loc[valid, "hub_interval_s"] - 1.0
+        pairs.loc[valid, "local_interval_s"] /
+        pairs.loc[valid, "hub_interval_s"] - 1.0
     ) * 1e6
 
     pairs["report_interval_ms"] = pairs["actual_hub_delta_ticks"] / hub_hz * 1000.0
@@ -295,7 +297,8 @@ def derive_events(events: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
 
     # This is the identifier to use on plots that include both matched and
     # unmatched events. It represents observation order, not protocol identity.
-    events["event_order"] = events.groupby("node", sort=False).cumcount().add(1)
+    events["event_order"] = events.groupby(
+        "node", sort=False).cumcount().add(1)
 
     # Nullable integer columns write as blank rather than 0.0 in CSV output.
     events["event_id"] = events["event_id"].astype("Int64")
@@ -319,9 +322,12 @@ def derive_events(events: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
         events["hub_ticks"] - events["reference_hub_ticks"]
     )
     events["recomputed_error_ns"] = events["recomputed_error_ticks"] / hub_hz * 1e9
-    events["error_consistency_ns"] = events["error_ns"] - events["recomputed_error_ns"]
-    events["error_plus_transport_us"] = events["error_us"] + events["transport_age_us"]
-    events["error_minus_transport_us"] = events["error_us"] - events["transport_age_us"]
+    events["error_consistency_ns"] = events["error_ns"] - \
+        events["recomputed_error_ns"]
+    events["error_plus_transport_us"] = events["error_us"] + \
+        events["transport_age_us"]
+    events["error_minus_transport_us"] = events["error_us"] - \
+        events["transport_age_us"]
 
     # Assign a real hub-domain timestamp only when the event actually has one.
     #
@@ -552,7 +558,8 @@ def derive_ttl_pulses(ttl_records: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
         pulses["acquired_hub_ticks"] - pulses["target_hub_ticks"]
     ) * tick_to_ns
     pulses["generation_error_consistency_ns"] = (
-        pulses["generation_error_ns"] - pulses["recomputed_generation_error_ns"]
+        pulses["generation_error_ns"] -
+        pulses["recomputed_generation_error_ns"]
     )
     pulses["wire_offset_consistency_ns"] = (
         pulses["wire_offset_ns"] - pulses["recomputed_wire_offset_ns"]
@@ -656,7 +663,7 @@ def calculate_rolling_fits(
             continue
 
         for end in range(window_size - 1, len(segment)):
-            window = segment.iloc[end - window_size + 1 : end + 1]
+            window = segment.iloc[end - window_size + 1: end + 1]
             local = window["local_ticks"].to_numpy()
             hub = window["hub_ticks"].to_numpy()
             if np.any(np.diff(local) <= 0) or np.any(np.diff(hub) <= 0):
@@ -690,7 +697,8 @@ def derive_adelie_clock(clock: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
     clock = clock.dropna(
         subset=["t1_adelie_ns", "t2_korora_ticks", "t4_adelie_ns"]
     ).copy()
-    clock = clock.sort_values(["t1_adelie_ns", "sequence"]).reset_index(drop=True)
+    clock = clock.sort_values(
+        ["t1_adelie_ns", "sequence"]).reset_index(drop=True)
 
     if "t3_korora_ticks" not in clock or clock["t3_korora_ticks"].isna().all():
         clock["t3_korora_ticks"] = clock["t2_korora_ticks"]
@@ -723,7 +731,8 @@ def derive_adelie_clock(clock: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
         - clock.loc[missing_network, "server_processing_us"]
     )
     clock["sample_offset_ticks"] = (
-        clock["midpoint_korora_ticks"] - (hub_hz / 1e9) * clock["midpoint_adelie_ns"]
+        clock["midpoint_korora_ticks"] -
+        (hub_hz / 1e9) * clock["midpoint_adelie_ns"]
     )
 
     return clock
@@ -741,7 +750,7 @@ def calculate_adelie_rolling_fits(
     expected_slope = hub_hz / 1e9
 
     for end in range(window_size - 1, len(clock)):
-        window = clock.iloc[end - window_size + 1 : end + 1]
+        window = clock.iloc[end - window_size + 1: end + 1]
         local = window["midpoint_adelie_ns"].to_numpy(dtype=np.float64)
         hub = window["midpoint_korora_ticks"].to_numpy(dtype=np.float64)
 
@@ -754,17 +763,19 @@ def calculate_adelie_rolling_fits(
         prediction_error_us = math.nan
 
         if end >= window_size:
-            training = clock.iloc[end - window_size : end]
+            training = clock.iloc[end - window_size: end]
             try:
                 previous_slope, previous_intercept, _ = fit_affine(
                     training["midpoint_adelie_ns"].to_numpy(dtype=np.float64),
-                    training["midpoint_korora_ticks"].to_numpy(dtype=np.float64),
+                    training["midpoint_korora_ticks"].to_numpy(
+                        dtype=np.float64),
                 )
                 predicted = previous_intercept + previous_slope * float(
                     clock.iloc[end]["midpoint_adelie_ns"]
                 )
                 prediction_error_us = (
-                    (float(clock.iloc[end]["midpoint_korora_ticks"]) - predicted)
+                    (float(clock.iloc[end]
+                     ["midpoint_korora_ticks"]) - predicted)
                     / hub_hz
                     * 1e6
                 )
@@ -850,7 +861,8 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
     )
 
     commands = commands.dropna(subset=["sequence"]).copy()
-    commands = commands.sort_values(["adelie_t1_ns", "sequence"]).reset_index(drop=True)
+    commands = commands.sort_values(
+        ["adelie_t1_ns", "sequence"]).reset_index(drop=True)
     tick_to_us = 1e6 / hub_hz
 
     if "total_rtt_us" not in commands or commands["total_rtt_us"].isna().all():
@@ -891,7 +903,8 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
         if column not in commands:
             commands[column] = values
         else:
-            commands[column] = commands[column].where(commands[column].notna(), values)
+            commands[column] = commands[column].where(
+                commands[column].notna(), values)
 
     minimum_t1 = commands["adelie_t1_ns"].dropna().min()
     commands["elapsed_s"] = (
@@ -997,7 +1010,8 @@ def create_adelie_command_events(commands: pd.DataFrame, hub_hz: float) -> pd.Da
                 command.korora_done_tx_ticks,
                 "LOCAL",
             ),
-            ("adelie", "COMMAND_RESULT_RX", command.adelie_t7_ns, 1e9, t7_hub, "TRACK"),
+            ("adelie", "COMMAND_RESULT_RX",
+             command.adelie_t7_ns, 1e9, t7_hub, "TRACK"),
         ]
 
         for node, kind, local_ticks, local_hz, hub_ticks, state in stages:
@@ -1095,10 +1109,12 @@ def create_node_summary(
             continue
 
         node_pairs = (
-            pairs[pairs["node"] == node].copy() if not pairs.empty else pd.DataFrame()
+            pairs[pairs["node"] == node].copy(
+            ) if not pairs.empty else pd.DataFrame()
         )
         node_sync = (
-            sync[sync["node"] == node].copy() if not sync.empty else pd.DataFrame()
+            sync[sync["node"] == node].copy(
+            ) if not sync.empty else pd.DataFrame()
         )
         node_rolling = (
             rolling[rolling["node"] == node].copy()
@@ -1142,24 +1158,31 @@ def create_node_summary(
             )
             row["segment_count"] = int(node_pairs["segment_id"].nunique())
             row.update(
-                describe(node_pairs["local_interval_error_ppm"], "interval_error_ppm")
+                describe(
+                    node_pairs["local_interval_error_ppm"], "interval_error_ppm")
             )
-            row.update(describe(node_pairs["transport_age_us"], "transport_age_us"))
+            row.update(
+                describe(node_pairs["transport_age_us"], "transport_age_us"))
 
         if not node_sync.empty:
-            row["track_fraction"] = float((node_sync["state"] == "TRACK").mean())
-            row["track_sync_count"] = int((node_sync["state"] == "TRACK").sum())
-            row["acquire_sync_count"] = int((node_sync["state"] == "ACQUIRE").sum())
+            row["track_fraction"] = float(
+                (node_sync["state"] == "TRACK").mean())
+            row["track_sync_count"] = int(
+                (node_sync["state"] == "TRACK").sum())
+            row["acquire_sync_count"] = int(
+                (node_sync["state"] == "ACQUIRE").sum())
             track = node_sync[node_sync["state"] == "TRACK"]
             if not track.empty:
                 row.update(describe(track["slope_ppm"], "firmware_slope_ppm"))
                 row.update(describe(track["rms_us"], "firmware_rms_us"))
                 row.update(
                     describe(
-                        track["prefit_residual_us"].abs(), "abs_prefit_residual_us"
+                        track["prefit_residual_us"].abs(
+                        ), "abs_prefit_residual_us"
                     )
                 )
-                row.update(describe(track["model_step_us"].abs(), "abs_model_step_us"))
+                row.update(
+                    describe(track["model_step_us"].abs(), "abs_model_step_us"))
 
         if not node_rolling.empty:
             row.update(describe(node_rolling["rms_us"], "rolling_rms_us"))
@@ -1169,7 +1192,8 @@ def create_node_summary(
                 )
             )
             row.update(
-                describe(node_rolling["clock_instability_ppm"], "clock_instability_ppm")
+                describe(
+                    node_rolling["clock_instability_ppm"], "clock_instability_ppm")
             )
             corr = correlation(node_rolling, "clock_instability_ppm", "rms_us")
             if math.isfinite(corr):
@@ -1195,9 +1219,11 @@ def create_node_summary(
             row["event_unsync_count"] = int(len(gpio_events) - len(matched))
             if not matched.empty:
                 row.update(describe(matched["error_us"], "event_error_us"))
-                row.update(describe(matched["abs_error_us"], "event_abs_error_us"))
                 row.update(
-                    describe(matched["transport_age_us"], "event_transport_age_us")
+                    describe(matched["abs_error_us"], "event_abs_error_us"))
+                row.update(
+                    describe(matched["transport_age_us"],
+                             "event_transport_age_us")
                 )
                 row.update(
                     describe(
@@ -1246,7 +1272,8 @@ def create_ttl_report_section(ttl_pulses: pd.DataFrame) -> pd.DataFrame:
         row.update(describe(pulse_width, "ttl_pulse_width_us"))
 
     if not completed.empty:
-        row.update(describe(completed["generation_error_us"], "ttl_generation_error_us"))
+        row.update(
+            describe(completed["generation_error_us"], "ttl_generation_error_us"))
         row.update(describe(completed["wire_offset_us"], "ttl_wire_offset_us"))
         row.update(describe(completed["total_error_us"], "ttl_total_error_us"))
         row.update(
@@ -1296,25 +1323,32 @@ def create_adelie_summary(
     }
 
     if not clock.empty:
-        row["duration_s"] = float(clock["elapsed_s"].max() - clock["elapsed_s"].min())
-        row["track_fraction"] = float(max(0, len(clock) - window_size + 1) / len(clock))
+        row["duration_s"] = float(
+            clock["elapsed_s"].max() - clock["elapsed_s"].min())
+        row["track_fraction"] = float(
+            max(0, len(clock) - window_size + 1) / len(clock))
         row.update(describe(clock["network_rtt_us"], "clock_network_rtt_us"))
         row.update(
-            describe(clock["full_exchange_recomputed_us"], "clock_full_exchange_us")
+            describe(clock["full_exchange_recomputed_us"],
+                     "clock_full_exchange_us")
         )
         row.update(
-            describe(clock["server_processing_us"], "clock_server_processing_us")
+            describe(clock["server_processing_us"],
+                     "clock_server_processing_us")
         )
 
     if not rolling.empty:
-        row.update(describe(rolling["slope_error_ppm"], "clock_slope_error_ppm"))
+        row.update(
+            describe(rolling["slope_error_ppm"], "clock_slope_error_ppm"))
         row.update(describe(rolling["rms_us"], "clock_rms_us"))
         row.update(
-            describe(rolling["max_abs_residual_us"], "clock_max_abs_residual_us")
+            describe(rolling["max_abs_residual_us"],
+                     "clock_max_abs_residual_us")
         )
         row.update(
             describe(
-                rolling["prediction_error_us"].abs(), "clock_abs_prediction_error_us"
+                rolling["prediction_error_us"].abs(
+                ), "clock_abs_prediction_error_us"
             )
         )
         row["model_generation_min"] = int(rolling["generation"].min())
@@ -1338,7 +1372,8 @@ def create_adelie_summary(
             if column in commands:
                 row.update(describe(commands[column], prefix))
         if "fairy_model_valid" in commands:
-            valid = pd.to_numeric(commands["fairy_model_valid"], errors="coerce")
+            valid = pd.to_numeric(
+                commands["fairy_model_valid"], errors="coerce")
             row["fairy_model_valid_fraction"] = float((valid == 1).mean())
 
     return pd.DataFrame([row])
@@ -1491,14 +1526,18 @@ def analyse_directory(
     rolling = calculate_rolling_fits(pairs, window_size, hub_hz, local_hz)
     event_alignment = create_event_alignment(events)
 
-    adelie_clock = derive_adelie_clock(load_csv(input_dir / "adelie_clock.csv"), hub_hz)
-    adelie_rolling = calculate_adelie_rolling_fits(adelie_clock, window_size, hub_hz)
+    adelie_clock = derive_adelie_clock(
+        load_csv(input_dir / "adelie_clock.csv"), hub_hz)
+    adelie_rolling = calculate_adelie_rolling_fits(
+        adelie_clock, window_size, hub_hz)
     adelie_commands = derive_adelie_commands(
         load_csv(input_dir / "adelie_commands.csv"), hub_hz
     )
-    adelie_command_events = create_adelie_command_events(adelie_commands, hub_hz)
+    adelie_command_events = create_adelie_command_events(
+        adelie_commands, hub_hz)
 
-    node_summary = create_node_summary(pairs, sync, rolling, diagnostics, events)
+    node_summary = create_node_summary(
+        pairs, sync, rolling, diagnostics, events)
     adelie_summary = create_adelie_summary(
         adelie_clock, adelie_rolling, adelie_commands, window_size
     )
@@ -1524,8 +1563,10 @@ def analyse_directory(
         stale_ttl_summary.unlink()
     adelie_clock.to_csv(output_dir / "adelie_clock_derived.csv", index=False)
     adelie_rolling.to_csv(output_dir / "adelie_rolling_fits.csv", index=False)
-    adelie_commands.to_csv(output_dir / "adelie_commands_derived.csv", index=False)
-    adelie_command_events.to_csv(output_dir / "adelie_command_events.csv", index=False)
+    adelie_commands.to_csv(
+        output_dir / "adelie_commands_derived.csv", index=False)
+    adelie_command_events.to_csv(
+        output_dir / "adelie_command_events.csv", index=False)
     summary.to_csv(output_dir / "summary.csv", index=False)
 
     summary_text = print_summary(summary)
@@ -1560,7 +1601,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("analysis"))
     parser.add_argument("--hub-hz", type=float, default=DEFAULT_HUB_HZ)
     parser.add_argument("--local-hz", type=float, default=DEFAULT_LOCAL_HZ)
-    parser.add_argument("--sync-rate", type=float, default=DEFAULT_SYNC_RATE_HZ)
+    parser.add_argument("--sync-rate", type=float,
+                        default=DEFAULT_SYNC_RATE_HZ)
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_SIZE)
     return parser.parse_args()
 

@@ -1,0 +1,10 @@
+# Native host test and library build output
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.gcda
+*.gcno
+*.gcov

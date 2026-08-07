@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adelie-control"
+version = "2.5.0"
+description = "Control and recording application for the Korora Fairy system"
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=0.22",
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "PySide6>=6.8",
+    "pyqtgraph>=0.13.7",
+]
+
+[project.scripts]
+adelie = "adelie.app:main"
+adelie-parse = "adelie.analysis.parse_log:main"
+adelie-analyse = "adelie.analysis.analyse:main"
+adelie-plot = "adelie.analysis.plot:main"
+adelie-run-analysis = "adelie.analysis.run_all:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

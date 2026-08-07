@@ -1,0 +1,12 @@
+# PlatformIO and compiler output
+.pio/
+.clangd/
+compile_commands.json
+*.hex
+*.bin
+*.elf
+*.map
+
+# Local editor files
+.vscode/
+.idea/

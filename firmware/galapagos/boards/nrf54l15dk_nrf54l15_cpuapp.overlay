@@ -1,0 +1,8 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+    zephyr,user {
+        event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+        ttl-output-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+    };
+};
