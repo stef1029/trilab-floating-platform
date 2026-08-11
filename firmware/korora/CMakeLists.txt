@@ -19,6 +19,7 @@ target_sources(app PRIVATE
   src/galapagos_manager.cpp
   src/experiment.cpp
   src/control.cpp
+  src/local_sensors.cpp
   ../shared/src/sdc_anchor_report.c
   ../shared/src/transport.cpp
   ../shared/src/fairy_protocol.cpp

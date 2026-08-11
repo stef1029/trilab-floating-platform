@@ -25,6 +25,9 @@ ADELIE_VERSION = 2
 ADELIE_HEADER = struct.Struct("<HBBBBHHIIQI H".replace(" ", ""))
 ADELIE_HEADER_SIZE = 32
 
+IMU_SAMPLE_FORMAT_V1 = 1
+IMU_PACKED_SAMPLE_V1 = struct.Struct("<Ihhhhhhiii")
+
 
 @dataclass(frozen=True, slots=True)
 class Tlv:
@@ -92,7 +95,8 @@ def _encode_value(value_type: ValueType, value: Any) -> bytes:
 
 
 def encode_tlvs(
-    fields: Iterable[tuple[int, ValueType, Any]] | Mapping[int, tuple[ValueType, Any]]
+    fields: Iterable[tuple[int, ValueType, Any]
+                     ] | Mapping[int, tuple[ValueType, Any]]
 ) -> bytes:
     items = fields.items() if isinstance(fields, Mapping) else fields
     encoded = bytearray()
@@ -147,7 +151,7 @@ def decode_tlvs(payload: bytes) -> tuple[Tlv, ...]:
         offset += 4
         if offset + length > len(payload):
             raise ValueError("truncated TLV value")
-        raw = payload[offset : offset + length]
+        raw = payload[offset: offset + length]
         offset += length
         value_type = ValueType(raw_type)
         fields.append(
@@ -280,3 +284,50 @@ def field_value(record: FairyRecord | AdelieMessage, tag: Field | int, default: 
         if field.tag == wanted:
             return field.value
     return default
+
+
+@dataclass(frozen=True, slots=True)
+class ImuPackedSample:
+    timestamp_ticks: int
+    accel_raw: tuple[int, int, int]
+    gyro_raw: tuple[int, int, int]
+    mag_raw: tuple[int, int, int]
+
+
+def decode_imu_samples(record: FairyRecord) -> tuple[ImuPackedSample, ...]:
+    """Decode a Korora IMU_SAMPLES packed TLV (format v1).
+
+    The Fairy record timestamp is the first sample timestamp. Every packed
+    sample begins with a uint32 tick delta relative to that timestamp.
+    """
+    sample_format = int(field_value(record, Field.SAMPLE_FORMAT, 0))
+    if sample_format != IMU_SAMPLE_FORMAT_V1:
+        raise ValueError(f"unsupported IMU sample format {sample_format}")
+
+    packed = field_value(record, Field.PACKED_SAMPLES, b"")
+    if not isinstance(packed, bytes):
+        raise ValueError("IMU packed sample field is not bytes")
+    declared_count = int(field_value(record, Field.SAMPLE_COUNT, 0))
+    expected = declared_count * IMU_PACKED_SAMPLE_V1.size
+    if len(packed) != expected:
+        raise ValueError(
+            f"IMU sample block is {len(packed)} bytes; expected {expected}"
+        )
+
+    decoded: list[ImuPackedSample] = []
+    for offset in range(0, len(packed), IMU_PACKED_SAMPLE_V1.size):
+        (
+            delta_ticks,
+            ax, ay, az,
+            gx, gy, gz,
+            mx, my, mz,
+        ) = IMU_PACKED_SAMPLE_V1.unpack_from(packed, offset)
+        decoded.append(
+            ImuPackedSample(
+                timestamp_ticks=record.timestamp_ticks + delta_ticks,
+                accel_raw=(ax, ay, az),
+                gyro_raw=(gx, gy, gz),
+                mag_raw=(mx, my, mz),
+            )
+        )
+    return tuple(decoded)

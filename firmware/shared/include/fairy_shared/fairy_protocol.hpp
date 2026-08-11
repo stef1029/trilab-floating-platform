@@ -32,6 +32,9 @@ enum class RecordType : std::uint16_t {
   command_result = 0x0300,
   fault = 0x0400,
   test_marker = 0x0500,
+  local_sensors = 0x0600,
+  imu_samples = 0x0601,
+  power_status = 0x0602,
 };
 
 enum RecordFlag : std::uint16_t {
@@ -105,6 +108,29 @@ enum class Field : std::uint16_t {
   detail = 0x0050,
   reason = 0x0051,
   test_mode = 0x0060,
+  sensor_status = 0x0070,
+  sample_rate_hz = 0x0071,
+  sample_count = 0x0072,
+  accel_x_mg = 0x0073,
+  accel_y_mg = 0x0074,
+  accel_z_mg = 0x0075,
+  gyro_x_mdps = 0x0076,
+  gyro_y_mdps = 0x0077,
+  gyro_z_mdps = 0x0078,
+  mag_x_milligauss = 0x0079,
+  mag_y_milligauss = 0x007A,
+  mag_z_milligauss = 0x007B,
+  sensor_i2c_errors = 0x007C,
+  chunk_sequence = 0x007D,
+  packed_samples = 0x007E,
+  sample_format = 0x007F,
+  pmic_present = 0x0080,
+  power_source = 0x0081,
+  supply_millivolts = 0x0082,
+  battery_millivolts = 0x0083,
+  battery_current_ma = 0x0084,
+  battery_soc_per_mille = 0x0085,
+  battery_health_per_mille = 0x0086,
 };
 
 struct RecordHeader {

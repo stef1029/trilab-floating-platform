@@ -30,6 +30,7 @@ from .models import (
     ClockExchange,
     HostClockModel,
     InventoryEntry,
+    LocalSensorState,
     NodeStats,
     TtlStats,
 )
@@ -38,6 +39,7 @@ from .protocol import (
     FairyRecord,
     decode_adelie,
     decode_fairy,
+    decode_imu_samples,
     encode_adelie,
 )
 from .recorder import LogRecorder
@@ -59,6 +61,7 @@ class AdelieController:
             GALAPAGOS_ADDRESS: NodeStats(GALAPAGOS_ADDRESS, "galapagos"),
         }
         self.session_id = 0
+        self.local_sensors = LocalSensorState()
         self.command_id = random.randint(1, 0x7FFF_FFFF)
         self.connected = False
         self.inventory_applied = False
@@ -215,6 +218,9 @@ class AdelieController:
             raise RuntimeError(
                 "wait for every Fairy and Galapagos clock model")
         self.session_id = random.randint(1, 0xFFFF_FFFE)
+        self.local_sensors.raw_chunks_received = 0
+        self.local_sensors.raw_samples_received = 0
+        self.local_sensors.last_chunk_sequence = 0
         self.recorder.start(
             path,
             self.session_id,
@@ -385,6 +391,7 @@ class AdelieController:
                 self._last_clock_exchange_rtt_us = float("nan")
             if state in {"disconnected", "error", "stopped"}:
                 self.connected = False
+                self.local_sensors = LocalSensorState()
                 self.nodes[KORORA_ADDRESS].connected = False
                 self.inventory_applied = False
                 self._inventory_apply_command = None
@@ -469,6 +476,12 @@ class AdelieController:
             )
             if int(Field.RSSI_DBM) in fields:
                 stats.rssi_dbm = int(fields[int(Field.RSSI_DBM)])
+        elif record.record_type is RecordType.LOCAL_SENSORS:
+            self._update_local_sensors(fields, received_ns)
+        elif record.record_type is RecordType.IMU_SAMPLES:
+            self._update_imu_samples(record, fields, received_ns)
+        elif record.record_type is RecordType.POWER_STATUS:
+            self._update_power_status(fields, received_ns)
         elif record.record_type is RecordType.LIGHT_GATE:
             stats.note_light_gate(received_ns)
         elif record.record_type in {
@@ -494,6 +507,87 @@ class AdelieController:
             "record",
             {"message": message, "record": record, "stats": stats},
         )
+
+    def _update_local_sensors(
+        self, fields: dict[int, Any], received_ns: int
+    ) -> None:
+        status = int(fields.get(int(Field.SENSOR_STATUS), 0))
+        sensors = self.local_sensors
+        sensors.i2c_ready = bool(status & 0x01)
+        sensors.imu_present = bool(status & 0x02)
+        sensors.magnetometer_present = bool(status & 0x04)
+        sensors.pmic_present = bool(status & 0x08) or sensors.pmic_present
+        sensors.sample_rate_hz = int(
+            fields.get(int(Field.SAMPLE_RATE_HZ), sensors.sample_rate_hz)
+        )
+        sensors.sample_count = int(
+            fields.get(int(Field.SAMPLE_COUNT), sensors.sample_count)
+        )
+        sensors.i2c_errors = int(
+            fields.get(int(Field.SENSOR_I2C_ERRORS), sensors.i2c_errors)
+        )
+        sensors.accel_mg = tuple(
+            int(fields.get(int(tag), current))
+            for tag, current in zip(
+                (Field.ACCEL_X_MG, Field.ACCEL_Y_MG, Field.ACCEL_Z_MG),
+                sensors.accel_mg,
+            )
+        )
+        sensors.gyro_mdps = tuple(
+            int(fields.get(int(tag), current))
+            for tag, current in zip(
+                (Field.GYRO_X_MDPS, Field.GYRO_Y_MDPS, Field.GYRO_Z_MDPS),
+                sensors.gyro_mdps,
+            )
+        )
+        sensors.mag_milligauss = tuple(
+            int(fields.get(int(tag), current))
+            for tag, current in zip(
+                (
+                    Field.MAG_X_MILLIGAUSS,
+                    Field.MAG_Y_MILLIGAUSS,
+                    Field.MAG_Z_MILLIGAUSS,
+                ),
+                sensors.mag_milligauss,
+            )
+        )
+        sensors.last_update_ns = received_ns
+        self.on_event("local_sensors", sensors)
+
+    def _update_imu_samples(
+        self, record: FairyRecord, fields: dict[int, Any], received_ns: int
+    ) -> None:
+        samples = decode_imu_samples(record)
+        sensors = self.local_sensors
+        sensors.raw_chunks_received += 1
+        sensors.raw_samples_received += len(samples)
+        sensors.last_chunk_sequence = int(
+            fields.get(int(Field.CHUNK_SEQUENCE), sensors.last_chunk_sequence)
+        )
+        sensors.last_update_ns = received_ns
+
+    def _update_power_status(
+        self, fields: dict[int, Any], received_ns: int
+    ) -> None:
+        sensors = self.local_sensors
+        sensors.pmic_present = bool(
+            fields.get(int(Field.PMIC_PRESENT), sensors.pmic_present)
+        )
+        sensors.power_source = str(
+            fields.get(int(Field.POWER_SOURCE), sensors.power_source)
+        )
+        optional_fields = (
+            (Field.SUPPLY_MILLIVOLTS, "supply_millivolts"),
+            (Field.BATTERY_MILLIVOLTS, "battery_millivolts"),
+            (Field.BATTERY_CURRENT_MA, "battery_current_ma"),
+            (Field.BATTERY_SOC_PER_MILLE, "battery_soc_per_mille"),
+            (Field.BATTERY_HEALTH_PER_MILLE, "battery_health_per_mille"),
+        )
+        for tag, attribute in optional_fields:
+            if int(tag) in fields:
+                setattr(sensors, attribute, int(fields[int(tag)]))
+        sensors.last_update_ns = received_ns
+        self.on_event("local_sensors", sensors)
 
     def _update_ttl(
         self, record: FairyRecord, fields: dict[int, Any], received_ns: int

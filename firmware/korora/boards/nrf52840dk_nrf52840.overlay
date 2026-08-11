@@ -1,4 +1,5 @@
 #include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 / {
@@ -28,6 +29,21 @@
             low-power-enable;
         };
     };
+
+    korora_i2c1_default: korora_i2c1_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 30)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 31)>;
+        };
+    };
+
+    korora_i2c1_sleep: korora_i2c1_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SDA, 0, 30)>,
+                    <NRF_PSEL(TWIM_SCL, 0, 31)>;
+            low-power-enable;
+        };
+    };
 };
 
 &uart1 {
@@ -36,6 +52,28 @@
     current-speed = <460800>;
     pinctrl-0 = <&fairy_uart1_default>;
     pinctrl-1 = <&fairy_uart1_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+/*
+ * The DK's normal i2c0 mapping uses P0.26/P0.27, which are already the
+ * working Fairy UART pins above. Keep that controller disabled.
+ */
+&i2c0 {
+    status = "disabled";
+};
+
+/* i2c1 and spi1 share the same nRF peripheral instance on this DK. */
+&spi1 {
+    status = "disabled";
+};
+
+&i2c1 {
+    compatible = "nordic,nrf-twim";
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+    pinctrl-0 = <&korora_i2c1_default>;
+    pinctrl-1 = <&korora_i2c1_sleep>;
     pinctrl-names = "default", "sleep";
 };
 

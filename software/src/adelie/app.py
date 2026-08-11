@@ -37,7 +37,12 @@ from .constants import (
 )
 from .controller import AdelieController
 from .models import InventoryEntry
-from .widgets import NodeCard, TransportDiagnostics, TtlDiagnostics
+from .widgets import (
+    LocalSensorsPanel,
+    NodeCard,
+    TransportDiagnostics,
+    TtlDiagnostics,
+)
 
 
 STYLE = """
@@ -198,6 +203,9 @@ class MainWindow(QMainWindow):
         modes.addWidget(stop_ttl)
         root_layout.addLayout(modes)
 
+        self.local_sensor_panel = LocalSensorsPanel()
+        root_layout.addWidget(self.local_sensor_panel)
+
         diagnostics = QHBoxLayout()
         diagnostics.setContentsMargins(0, 0, 0, 0)
         self.ttl_diagnostics = TtlDiagnostics()
@@ -296,6 +304,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(str(value), 8000)
         elif kind == "ttl":
             self.ttl_diagnostics.update_ttl(value)
+        elif kind == "local_sensors":
+            self.local_sensor_panel.update_state(value)
         elif kind == "response" and value["response"].status not in (
             0,
             1,
@@ -386,6 +396,7 @@ class MainWindow(QMainWindow):
                 card.update_clock_diagnostics(diagnostics)
         self.transport_diagnostics.update_diagnostics(diagnostics)
         self.ttl_diagnostics.update_diagnostics(diagnostics)
+        self.local_sensor_panel.update_state(self.controller.local_sensors)
         if not self.controller.recorder.active:
             self.record_button.setEnabled(self.controller.ready_to_record)
 

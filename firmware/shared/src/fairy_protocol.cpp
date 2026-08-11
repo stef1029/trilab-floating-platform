@@ -74,7 +74,6 @@ bool record_visible_at(RecordType type, TelemetryLevel level) {
   case RecordType::test_marker:
   case RecordType::transport_timing:
     return true;
-    return true;
 
   case RecordType::boot:
   case RecordType::health:
@@ -82,9 +81,12 @@ bool record_visible_at(RecordType type, TelemetryLevel level) {
   case RecordType::link_quality:
   case RecordType::sync_quality:
   case RecordType::clock_model_reset:
+  case RecordType::local_sensors:
+  case RecordType::power_status:
     return level >= TelemetryLevel::standard;
 
   case RecordType::sync_observation:
+  case RecordType::imu_samples:
   case RecordType::clock_pair:
     return level >= TelemetryLevel::full;
   }

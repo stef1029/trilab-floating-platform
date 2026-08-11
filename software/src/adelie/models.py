@@ -74,6 +74,30 @@ class NodeStats:
 
 
 @dataclass(slots=True)
+class LocalSensorState:
+    i2c_ready: bool = False
+    imu_present: bool = False
+    magnetometer_present: bool = False
+    pmic_present: bool = False
+    sample_rate_hz: int = 0
+    sample_count: int = 0
+    i2c_errors: int = 0
+    accel_mg: tuple[int, int, int] = (0, 0, 0)
+    gyro_mdps: tuple[int, int, int] = (0, 0, 0)
+    mag_milligauss: tuple[int, int, int] = (0, 0, 0)
+    raw_chunks_received: int = 0
+    raw_samples_received: int = 0
+    last_chunk_sequence: int = 0
+    last_update_ns: int = 0
+    power_source: str = "nRF52840 DK"
+    supply_millivolts: int | None = None
+    battery_millivolts: int | None = None
+    battery_current_ma: int | None = None
+    battery_soc_per_mille: int | None = None
+    battery_health_per_mille: int | None = None
+
+
+@dataclass(slots=True)
 class TtlStats:
     session_id: int
     sequence: int

@@ -6,6 +6,7 @@
 #include "experiment.hpp"
 #include "fairy_manager.hpp"
 #include "galapagos_manager.hpp"
+#include "local_sensors.hpp"
 #include "rs485_bus.hpp"
 #include "timebase.hpp"
 
@@ -30,6 +31,13 @@ int main() {
 
   if (!start_component("fairies", korora_fairies::initialize()) ||
       !start_component("ble", korora_ble::initialize())) {
+    return 1;
+  }
+
+  // Local sensors deliberately start after BLE so their Fairy telemetry has a
+  // transport available immediately. Sensor absence is reported as status and
+  // does not make Korora unusable as a communications hub.
+  if (!start_component("local_sensors", korora_local_sensors::initialize())) {
     return 1;
   }
 
