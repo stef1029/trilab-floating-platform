@@ -1,0 +1,34 @@
+# KiCad temporary and backup files
+*.000
+*.bak
+*.bck
+*.tmp
+*~
+~*
+
+*-bak
+*-bak*
+*-cache*
+*-backups/
+
+_autosave-*
+\#auto_saved_files\#
+
+# Lock files
+~*.lck
+
+# Legacy/generated cache
+fp-info-cache
+
+# Local project/user settings
+*.kicad_prl
+
+# KiCad 9 local history
+.history/
+
+# Exported/generated files
+*.net
+*.dsn
+*.ses
+
+*.FCBak
