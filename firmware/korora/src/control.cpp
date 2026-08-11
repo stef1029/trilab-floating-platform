@@ -14,6 +14,7 @@
 #include "fairy_shared/system_config.hpp"
 #include "fairy_shared/tlv.hpp"
 #include "galapagos_manager.hpp"
+#include "local_sensors.hpp"
 #include "rs485_bus.hpp"
 #include "timebase.hpp"
 
@@ -160,6 +161,7 @@ fairy::protocol::Status begin_session(std::uint32_t wanted,
   }
   atomic_set(&session_id, static_cast<atomic_val_t>(wanted));
   korora_experiment::set_session(wanted);
+  korora_local_sensors::set_session(wanted);
   propagate_session(fairy::protocol::Opcode::start_session, wanted);
   return fairy::protocol::Status::accepted;
 }
@@ -169,6 +171,7 @@ void end_session(std::uint32_t ended) {
   korora_experiment::stop_ttl_train();
   propagate_session(fairy::protocol::Opcode::stop_session, ended);
   korora_experiment::set_session(0);
+  korora_local_sensors::set_session(0);
   atomic_clear(&session_id);
   diagnostic_session_active = false;
 }
@@ -208,7 +211,7 @@ void handle_local(const fairy::protocol::AdelieMessageView &command,
     break;
   }
 
-  case fairy::protocol::Opcode::get_health:
+  case fairy::protocol::Opcode::get_health: {
     (void)response_fields.u32(
         static_cast<std::uint16_t>(fairy::protocol::Field::transport_errors),
         korora_rs485::errors());
@@ -221,7 +224,18 @@ void handle_local(const fairy::protocol::AdelieMessageView &command,
     (void)response_fields.u8(
         static_cast<std::uint16_t>(fairy::protocol::Field::state),
         korora_ble::galapagos_connected() ? 1U : 0U);
+    const auto sensors = korora_local_sensors::snapshot();
+    (void)response_fields.u8(
+        static_cast<std::uint16_t>(fairy::protocol::Field::sensor_status),
+        sensors.status);
+    (void)response_fields.u32(
+        static_cast<std::uint16_t>(fairy::protocol::Field::sample_count),
+        sensors.sample_count);
+    (void)response_fields.u32(
+        static_cast<std::uint16_t>(fairy::protocol::Field::sensor_i2c_errors),
+        sensors.i2c_errors);
     break;
+  }
 
   case fairy::protocol::Opcode::set_telemetry: {
     std::uint8_t raw{};
@@ -231,8 +245,9 @@ void handle_local(const fairy::protocol::AdelieMessageView &command,
             static_cast<std::uint8_t>(fairy::protocol::TelemetryLevel::full)) {
       status = fairy::protocol::Status::invalid_parameter;
     } else {
-      korora_fairies::set_telemetry(
-          static_cast<fairy::protocol::TelemetryLevel>(raw));
+      const auto level = static_cast<fairy::protocol::TelemetryLevel>(raw);
+      korora_fairies::set_telemetry(level);
+      korora_local_sensors::set_telemetry(level);
     }
     break;
   }

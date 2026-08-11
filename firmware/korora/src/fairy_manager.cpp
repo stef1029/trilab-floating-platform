@@ -300,10 +300,9 @@ void forward(Node &node, const fairy::protocol::RecordView &record,
       record.header.type == fairy::protocol::RecordType::command_result;
   if (!event) {
     k_mutex_unlock(&nodes_mutex);
-    (void)korora_ble::send_to_adelie(address, fairy::transport::Channel::fairy,
-                                     raw, raw_length, 0, 0, 0,
-                                     (record.header.flags &
-                                      fairy::protocol::critical) != 0U);
+    (void)korora_ble::send_to_adelie(
+        address, fairy::transport::Channel::fairy, raw, raw_length, 0, 0, 0,
+        (record.header.flags & fairy::protocol::critical) != 0U);
     return;
   }
 
