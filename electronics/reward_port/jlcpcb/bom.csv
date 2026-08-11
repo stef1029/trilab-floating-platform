@@ -8,7 +8,7 @@
 220pF 50V NP0 +/-5%,"C11, C12",0402,C107001
 10uF 25V X5R +/-10%,C13,0805,C15850
 "TPSE477M010R0100",C18,CASE-E-7343-43,C308821
-"JST GH 4-position right-angle SMD header, 1.25mm","J1, J4",JST GH 1x4 P1.25mm RA SMD,C189895
+"JST GH 4-position right-angle SMD header, 1.25mm","J1, J4",JST GH 1x4 P1.25mm RA SMD,C51940118
 "JST GH 10-position right-angle SMD header, 1.25mm","J2, J3",JST GH 1x10 P1.25mm RA SMD,C2683602
 "JST GH 2-position right-angle SMD header, 1.25mm","J6, J7",JST GH 1x2 P1.25mm RA SMD,C189893
 N-channel MOSFET 60V 310mA,"Q1, Q2, Q3, Q4",SOT-323 (SC-70),C255579
