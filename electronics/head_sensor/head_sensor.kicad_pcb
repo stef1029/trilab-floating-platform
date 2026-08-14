@@ -145,9 +145,9 @@
 			(subtractmaskfromsilk no)
 			(outputformat 1)
 			(mirror no)
-			(drillshape 1)
+			(drillshape 0)
 			(scaleselection 1)
-			(outputdirectory "")
+			(outputdirectory "jlcpcb/")
 		)
 	)
 	(footprint "head_sensor:UFD_05-08-1711_ADI"
@@ -3254,7 +3254,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "DMN2991UFB4"
+		(property "Value" "DMN2300UFB4-7B"
 			(at 0 -1.6 0)
 			(layer "B.Fab")
 			(hide yes)
