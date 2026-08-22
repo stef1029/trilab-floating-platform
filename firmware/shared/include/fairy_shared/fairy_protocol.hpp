@@ -35,6 +35,8 @@ enum class RecordType : std::uint16_t {
   local_sensors = 0x0600,
   imu_samples = 0x0601,
   power_status = 0x0602,
+  scry_sample = 0x0603,
+  illumination_status = 0x0604,
 };
 
 enum RecordFlag : std::uint16_t {
@@ -131,6 +133,13 @@ enum class Field : std::uint16_t {
   battery_current_ma = 0x0084,
   battery_soc_per_mille = 0x0085,
   battery_health_per_mille = 0x0086,
+  raw_counts = 0x0087,
+  sample_index = 0x0088,
+  board_role = 0x0089,
+  drive_mode = 0x008A,
+  brightness = 0x008B,
+  led_index = 0x008C,
+  ready = 0x008D,
 };
 
 struct RecordHeader {

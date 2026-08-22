@@ -32,6 +32,9 @@ enum Capability : std::uint32_t {
   capability_valve = 1U << 3U,
   capability_ir = 1U << 4U,
   capability_sync_capture = 1U << 5U,
+  capability_green_blue_cue = 1U << 6U,
+  capability_spotlight = 1U << 7U,
+  capability_load_cell = 1U << 8U,
 };
 
 struct MagellanHeader {

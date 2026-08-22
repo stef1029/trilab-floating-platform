@@ -55,6 +55,8 @@ enum class Opcode : std::uint16_t {
   actuate_valve = 0x0203,
   configure_valve = 0x0204,
   configure_pins = 0x0205,
+  set_illumination = 0x0206,
+  set_status_led = 0x0207,
 
   schedule_ttl = 0x0300,
   start_ttl_train = 0x0301,
@@ -62,6 +64,10 @@ enum class Opcode : std::uint16_t {
 
   start_sync_test = 0x0400,
   stop_sync_test = 0x0401,
+
+  scry_stream = 0x0500,
+  scry_tare = 0x0501,
+  scry_calibration = 0x0502,
 };
 
 enum CommandFlag : std::uint16_t {
@@ -100,6 +106,13 @@ enum class CommandField : std::uint16_t {
   clock_t1_ns = 0x1060,
   clock_t2_ticks = 0x1061,
   clock_t3_ticks = 0x1062,
+  drive_mode = 0x1070,
+  brightness = 0x1071,
+  channel = 0x1072,
+  led_index = 0x1073,
+  sample_rate_hz = 0x1074,
+  sample_count = 0x1075,
+  scale = 0x1076,
 };
 
 struct MessageHeader {
