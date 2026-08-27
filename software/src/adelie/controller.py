@@ -313,6 +313,19 @@ class AdelieController:
             ],
         )
 
+    def set_status_led(self, led_index: int, enabled: bool) -> None:
+        # Protocol uses schematic LED numbers. D3 is firmware-owned READY;
+        # D1 and D2 map to nPM1300 LED2 and LED1 respectively.
+        if led_index not in (1, 2):
+            raise ValueError("only programmable hub LEDs 1 and 2 may be set")
+        self.command(
+            Opcode.SET_STATUS_LED,
+            fields=[
+                (CommandField.LED_INDEX, ValueType.U8, led_index),
+                (CommandField.ENABLED, ValueType.U8, int(enabled)),
+            ],
+        )
+
     def set_audio(
         self,
         address: int,
@@ -586,6 +599,14 @@ class AdelieController:
         for tag, attribute in optional_fields:
             if int(tag) in fields:
                 setattr(sensors, attribute, int(fields[int(tag)]))
+        if int(Field.DETAIL) in fields:
+            sensors.charge_status = str(fields[int(Field.DETAIL)])
+        else:
+            sensors.charge_status = ""
+        if int(Field.REASON) in fields:
+            sensors.charger_error = str(fields[int(Field.REASON)])
+        else:
+            sensors.charger_error = ""
         sensors.last_update_ns = received_ns
         self.on_event("local_sensors", sensors)
 

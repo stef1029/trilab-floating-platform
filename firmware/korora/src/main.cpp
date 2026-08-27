@@ -41,6 +41,12 @@ int main() {
     return 1;
   }
 
+  // D3 is driven by nPM1300 LED0 and is reserved as a trustworthy
+  // firmware-owned "all startup stages completed" indicator.
+  if (!korora_local_sensors::set_ready_led(true)) {
+    korora_debug::log("READY_LED unavailable\r\n");
+  }
+
   korora_debug::log(
       "READY transport=1 fairy=3 adelie=2 magellan=1 timer_hz=16000000 "
       "sync_hz=4\r\n");

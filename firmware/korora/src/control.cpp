@@ -252,6 +252,26 @@ void handle_local(const fairy::protocol::AdelieMessageView &command,
     break;
   }
 
+  case fairy::protocol::Opcode::set_status_led: {
+    std::uint8_t led_index{};
+    std::uint8_t enabled{};
+    if (!command_u8(command, fairy::protocol::CommandField::led_index,
+                    led_index) ||
+        !command_u8(command, fairy::protocol::CommandField::enabled, enabled) ||
+        led_index < 1U || led_index > 2U || enabled > 1U) {
+      status = fairy::protocol::Status::invalid_parameter;
+    } else {
+      // Protocol/UI uses schematic labels D1/D2. Hardware channels are
+      // D1 -> nPM LED2 and D2 -> nPM LED1. D3/nPM LED0 is reserved READY.
+      const std::uint8_t pmic_led_index = 3U - led_index;
+      if (!korora_local_sensors::set_status_led(pmic_led_index,
+                                                 enabled != 0U)) {
+        status = fairy::protocol::Status::invalid_state;
+      }
+    }
+    break;
+  }
+
   case fairy::protocol::Opcode::clock_exchange:
     (void)response_fields.u64(
         static_cast<std::uint16_t>(

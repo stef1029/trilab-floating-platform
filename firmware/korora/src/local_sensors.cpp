@@ -42,6 +42,34 @@ inline constexpr std::uint8_t mag_product_id = 0x2FU;
 inline constexpr std::uint8_t mag_product_id_value = 0x30U;
 inline constexpr std::uint8_t mag_xout0 = 0x00U;
 
+// nPM1300 uses a 7-bit I2C address and 16-bit register addresses.
+inline constexpr std::uint16_t pmic_address = 0x6BU;
+inline constexpr std::uint16_t pmic_vbus_status = 0x0207U;
+inline constexpr std::uint16_t pmic_task_vbat_measure = 0x0500U;
+inline constexpr std::uint16_t pmic_ibat_status = 0x0510U;
+inline constexpr std::uint16_t pmic_vbat_result_msb = 0x0511U;
+inline constexpr std::uint16_t pmic_gp0_result_lsbs = 0x0515U;
+inline constexpr std::uint16_t pmic_ibat_result_msb = 0x0518U;
+inline constexpr std::uint16_t pmic_gp1_result_lsbs = 0x051AU;
+inline constexpr std::uint16_t pmic_ibat_measure_enable = 0x0524U;
+inline constexpr std::uint16_t pmic_charge_current_msb = 0x0308U;
+inline constexpr std::uint16_t pmic_charge_current_lsb = 0x0309U;
+inline constexpr std::uint16_t pmic_discharge_limit_msb = 0x030AU;
+inline constexpr std::uint16_t pmic_discharge_limit_lsb = 0x030BU;
+inline constexpr std::uint16_t pmic_charge_status = 0x0334U;
+inline constexpr std::uint16_t pmic_charge_error_reason = 0x0336U;
+inline constexpr std::uint16_t pmic_charge_error_sensor = 0x0337U;
+inline constexpr std::uint16_t pmic_led_mode_base = 0x0A00U;
+inline constexpr std::uint16_t pmic_led_set_base = 0x0A03U;
+inline constexpr std::uint16_t pmic_led_clear_base = 0x0A04U;
+inline constexpr std::uint8_t pmic_led_mode_host = 2U;
+
+// LEDDRV has fixed ~5 mA current when enabled; there is no hardware PWM or
+// brightness register. Keep the indicators static rather than generating
+// continuous I2C traffic to fake dimming.
+std::uint16_t pmic_charge_current_ma{};
+std::uint16_t pmic_discharge_limit_ma{};
+
 inline constexpr std::uint16_t sample_rate_hz = 120U;
 inline constexpr std::uint32_t sample_period_us = 1'000'000U / sample_rate_hz;
 inline constexpr std::uint32_t live_period_ms = 100U;
@@ -67,6 +95,7 @@ atomic_t chunk_sequence;
 atomic_t flush_requested;
 
 k_mutex state_mutex;
+k_mutex i2c_mutex;
 Snapshot current_state;
 
 K_THREAD_STACK_DEFINE(sensor_stack, 4096);
@@ -98,6 +127,54 @@ void put_i32(std::uint8_t *destination, std::int32_t value) {
 
 std::uint32_t next_record_id() {
   return static_cast<std::uint32_t>(atomic_inc(&record_id)) + 1U;
+}
+
+int reg_read_byte(std::uint16_t address, std::uint8_t reg,
+                  std::uint8_t *value) {
+  k_mutex_lock(&i2c_mutex, K_FOREVER);
+  const int result = i2c_reg_read_byte(i2c_bus, address, reg, value);
+  k_mutex_unlock(&i2c_mutex);
+  return result;
+}
+
+int reg_write_byte(std::uint16_t address, std::uint8_t reg,
+                   std::uint8_t value) {
+  k_mutex_lock(&i2c_mutex, K_FOREVER);
+  const int result = i2c_reg_write_byte(i2c_bus, address, reg, value);
+  k_mutex_unlock(&i2c_mutex);
+  return result;
+}
+
+int burst_read(std::uint16_t address, std::uint8_t reg, std::uint8_t *value,
+               std::size_t length) {
+  k_mutex_lock(&i2c_mutex, K_FOREVER);
+  const int result = i2c_burst_read(i2c_bus, address, reg, value, length);
+  k_mutex_unlock(&i2c_mutex);
+  return result;
+}
+
+int pmic_read(std::uint16_t reg, std::uint8_t &value) {
+  const std::uint8_t address[2] = {
+      static_cast<std::uint8_t>(reg >> 8U),
+      static_cast<std::uint8_t>(reg & 0xFFU),
+  };
+  k_mutex_lock(&i2c_mutex, K_FOREVER);
+  const int result = i2c_write_read(i2c_bus, pmic_address, address,
+                                    sizeof(address), &value, sizeof(value));
+  k_mutex_unlock(&i2c_mutex);
+  return result;
+}
+
+int pmic_write(std::uint16_t reg, std::uint8_t value) {
+  const std::uint8_t data[3] = {
+      static_cast<std::uint8_t>(reg >> 8U),
+      static_cast<std::uint8_t>(reg & 0xFFU),
+      value,
+  };
+  k_mutex_lock(&i2c_mutex, K_FOREVER);
+  const int result = i2c_write(i2c_bus, data, sizeof(data), pmic_address);
+  k_mutex_unlock(&i2c_mutex);
+  return result;
 }
 
 std::uint8_t status_bits() {
@@ -148,7 +225,7 @@ bool publish_record(fairy::protocol::RecordType type, std::uint32_t session,
 
 bool probe_imu() {
   std::uint8_t who{};
-  if (i2c_reg_read_byte(i2c_bus, imu_address, imu_who_am_i, &who) != 0 ||
+  if (reg_read_byte(imu_address, imu_who_am_i, &who) != 0 ||
       who != imu_who_am_i_value) {
     note_i2c_error();
     return false;
@@ -156,12 +233,12 @@ bool probe_imu() {
 
   // CTRL3 defaults to BDU=1 and IF_INC=1. Reassert the documented value so
   // multi-byte reads remain coherent after any previous prototype firmware.
-  if (i2c_reg_write_byte(i2c_bus, imu_address, imu_ctrl3, 0x44U) != 0 ||
+  if (reg_write_byte(imu_address, imu_ctrl3, 0x44U) != 0 ||
       // ±500 dps; default LPF selection.
-      i2c_reg_write_byte(i2c_bus, imu_address, imu_ctrl6, 0x02U) != 0 ||
+      reg_write_byte(imu_address, imu_ctrl6, 0x02U) != 0 ||
       // High-performance 120 Hz accelerometer and gyro.
-      i2c_reg_write_byte(i2c_bus, imu_address, imu_ctrl1, 0x06U) != 0 ||
-      i2c_reg_write_byte(i2c_bus, imu_address, imu_ctrl2, 0x06U) != 0) {
+      reg_write_byte(imu_address, imu_ctrl1, 0x06U) != 0 ||
+      reg_write_byte(imu_address, imu_ctrl2, 0x06U) != 0) {
     note_i2c_error();
     return false;
   }
@@ -169,9 +246,184 @@ bool probe_imu() {
   return true;
 }
 
+bool probe_pmic() {
+  std::uint8_t status{};
+  if (pmic_read(pmic_vbus_status, status) != 0) {
+    note_i2c_error();
+    return false;
+  }
+
+  // Enable an IBAT conversion after each requested VBAT conversion.
+  if (pmic_write(pmic_ibat_measure_enable, 1U) != 0) {
+    note_i2c_error();
+    return false;
+  }
+
+  // Cache the configured charge/discharge ranges used to scale IBAT.
+  std::uint8_t charge_msb{};
+  std::uint8_t charge_lsb{};
+  std::uint8_t discharge_msb{};
+  std::uint8_t discharge_lsb{};
+  if (pmic_read(pmic_charge_current_msb, charge_msb) != 0 ||
+      pmic_read(pmic_charge_current_lsb, charge_lsb) != 0 ||
+      pmic_read(pmic_discharge_limit_msb, discharge_msb) != 0 ||
+      pmic_read(pmic_discharge_limit_lsb, discharge_lsb) != 0) {
+    note_i2c_error();
+    return false;
+  }
+  const std::uint16_t charge_code =
+      (static_cast<std::uint16_t>(charge_msb) << 1U) | (charge_lsb & 0x01U);
+  pmic_charge_current_ma = static_cast<std::uint16_t>(charge_code * 2U);
+
+  const std::uint16_t discharge_code =
+      (static_cast<std::uint16_t>(discharge_msb) << 1U) |
+      (discharge_lsb & 0x01U);
+  // nPM1300 exposes two supported discharge ranges: 200 mA and 1 A.
+  pmic_discharge_limit_ma = discharge_code == 84U ? 200U
+                            : discharge_code == 415U ? 1000U
+                                                     : 0U;
+
+  // Put all three nPM1300 LED sinks into host mode. In this schematic:
+  // D1 -> LED2, D2 -> LED1, D3 -> LED0. Start all three dark.
+  for (std::uint8_t index = 0; index < 3U; ++index) {
+    if (pmic_write(pmic_led_mode_base + index, pmic_led_mode_host) != 0 ||
+        pmic_write(pmic_led_clear_base + 2U * index, 1U) != 0) {
+      note_i2c_error();
+      return false;
+    }
+  }
+  return true;
+}
+
+const char *charge_status_text(std::uint8_t status, bool vbus_present) {
+  if ((status & (1U << 6U)) != 0U) {
+    return "Charging paused - PMIC hot";
+  }
+  if ((status & (1U << 1U)) != 0U) {
+    return "Full";
+  }
+  if ((status & (1U << 2U)) != 0U) {
+    return "Charging - trickle";
+  }
+  if ((status & (1U << 3U)) != 0U) {
+    return "Charging - constant current";
+  }
+  if ((status & (1U << 4U)) != 0U) {
+    return "Charging - constant voltage";
+  }
+  if ((status & (1U << 7U)) != 0U) {
+    return "Supplement mode";
+  }
+  if ((status & (1U << 5U)) != 0U) {
+    return "Recharge requested";
+  }
+  return vbus_present ? "USB - charger idle" : "Discharging";
+}
+
+const char *charge_error_text(std::uint8_t reason) {
+  if ((reason & (1U << 0U)) != 0U) {
+    return "NTC sensor error";
+  }
+  if ((reason & (1U << 1U)) != 0U) {
+    return "VBAT sensor error";
+  }
+  if ((reason & (1U << 2U)) != 0U) {
+    return "Battery-low charger error";
+  }
+  if ((reason & (1U << 3U)) != 0U) {
+    return "Trickle-voltage charger error";
+  }
+  if ((reason & (1U << 4U)) != 0U) {
+    return "Measurement timeout";
+  }
+  if ((reason & (1U << 5U)) != 0U) {
+    return "Charge timeout";
+  }
+  if ((reason & (1U << 6U)) != 0U) {
+    return "Trickle-charge timeout";
+  }
+  return "";
+}
+
+bool read_pmic_power() {
+  if ((status_bits() & status_pmic_present) == 0U) {
+    return false;
+  }
+
+  if (pmic_write(pmic_task_vbat_measure, 1U) != 0) {
+    note_i2c_error();
+    return false;
+  }
+
+  // VBAT + enabled IBAT are consecutive 250 us conversions.
+  k_sleep(K_MSEC(1));
+
+  std::uint8_t vbat_msb{};
+  std::uint8_t gp0_lsbs{};
+  std::uint8_t ibat_status{};
+  std::uint8_t ibat_msb{};
+  std::uint8_t gp1_lsbs{};
+  std::uint8_t vbus_status{};
+  std::uint8_t charger_status{};
+  std::uint8_t charger_error_reason{};
+  std::uint8_t charger_error_sensor{};
+  if (pmic_read(pmic_vbat_result_msb, vbat_msb) != 0 ||
+      pmic_read(pmic_gp0_result_lsbs, gp0_lsbs) != 0 ||
+      pmic_read(pmic_ibat_status, ibat_status) != 0 ||
+      pmic_read(pmic_ibat_result_msb, ibat_msb) != 0 ||
+      pmic_read(pmic_gp1_result_lsbs, gp1_lsbs) != 0 ||
+      pmic_read(pmic_vbus_status, vbus_status) != 0 ||
+      pmic_read(pmic_charge_status, charger_status) != 0 ||
+      pmic_read(pmic_charge_error_reason, charger_error_reason) != 0 ||
+      pmic_read(pmic_charge_error_sensor, charger_error_sensor) != 0) {
+    note_i2c_error();
+    return false;
+  }
+
+  const std::uint16_t vbat_raw =
+      (static_cast<std::uint16_t>(vbat_msb) << 2U) |
+      (gp0_lsbs & 0x03U);
+  const std::uint16_t millivolts = static_cast<std::uint16_t>(
+      (static_cast<std::uint32_t>(vbat_raw) * 5000U + 512U) / 1024U);
+
+  bool current_valid = (ibat_status & 0x10U) == 0U;
+  std::int32_t current_ma = 0;
+  if (current_valid) {
+    const std::uint16_t ibat_raw =
+        (static_cast<std::uint16_t>(ibat_msb) << 2U) |
+        ((gp1_lsbs >> 4U) & 0x03U);
+    const std::uint8_t mode = ibat_status & 0x0CU;
+    std::int32_t full_scale_ma = 0;
+    if (mode == 0x04U && pmic_discharge_limit_ma != 0U) {
+      full_scale_ma = -static_cast<std::int32_t>(
+          (static_cast<std::uint32_t>(pmic_discharge_limit_ma) * 112U) / 100U);
+    } else if (mode == 0x0CU && pmic_charge_current_ma != 0U) {
+      full_scale_ma = static_cast<std::int32_t>(
+          (static_cast<std::uint32_t>(pmic_charge_current_ma) * 125U) / 100U);
+    } else if (mode != 0x08U) {
+      current_valid = false;
+    }
+    if (current_valid && full_scale_ma != 0) {
+      current_ma = static_cast<std::int32_t>(
+          (static_cast<std::int64_t>(ibat_raw) * full_scale_ma) / 1023LL);
+    }
+  }
+
+  k_mutex_lock(&state_mutex, K_FOREVER);
+  current_state.battery_millivolts = millivolts;
+  current_state.battery_current_ma = current_ma;
+  current_state.battery_current_valid = current_valid;
+  current_state.vbus_present = (vbus_status & 0x01U) != 0U;
+  current_state.charger_status = charger_status;
+  current_state.charger_error_reason = charger_error_reason;
+  current_state.charger_error_sensor = charger_error_sensor;
+  k_mutex_unlock(&state_mutex);
+  return true;
+}
+
 bool probe_magnetometer() {
   std::uint8_t product{};
-  if (i2c_reg_read_byte(i2c_bus, mag_address, mag_product_id, &product) != 0 ||
+  if (reg_read_byte(mag_address, mag_product_id, &product) != 0 ||
       product != mag_product_id_value) {
     note_i2c_error();
     return false;
@@ -180,9 +432,9 @@ bool probe_magnetometer() {
   // BW=00 gives the 18-bit, 8 ms measurement path. Auto set/reset is useful
   // for a prototype around changing magnetic environments. Continuous mode at
   // 100 Hz is Cmm_en=1, CM_Freq=101.
-  if (i2c_reg_write_byte(i2c_bus, mag_address, mag_control0, 0x20U) != 0 ||
-      i2c_reg_write_byte(i2c_bus, mag_address, mag_control1, 0x00U) != 0 ||
-      i2c_reg_write_byte(i2c_bus, mag_address, mag_control2, 0x0DU) != 0) {
+  if (reg_write_byte(mag_address, mag_control0, 0x20U) != 0 ||
+      reg_write_byte(mag_address, mag_control1, 0x00U) != 0 ||
+      reg_write_byte(mag_address, mag_control2, 0x0DU) != 0) {
     note_i2c_error();
     return false;
   }
@@ -192,7 +444,7 @@ bool probe_magnetometer() {
 
 bool read_imu(RawSample &sample) {
   std::uint8_t raw[12]{};
-  if (i2c_burst_read(i2c_bus, imu_address, imu_outx_l_g, raw, sizeof(raw)) !=
+  if (burst_read(imu_address, imu_outx_l_g, raw, sizeof(raw)) !=
       0) {
     note_i2c_error();
     return false;
@@ -209,7 +461,7 @@ bool read_imu(RawSample &sample) {
 
 bool update_magnetometer(RawSample &sample) {
   std::uint8_t ready{};
-  if (i2c_reg_read_byte(i2c_bus, mag_address, mag_status, &ready) != 0) {
+  if (reg_read_byte(mag_address, mag_status, &ready) != 0) {
     note_i2c_error();
     return false;
   }
@@ -219,7 +471,7 @@ bool update_magnetometer(RawSample &sample) {
   }
 
   std::uint8_t raw[7]{};
-  if (i2c_burst_read(i2c_bus, mag_address, mag_xout0, raw, sizeof(raw)) != 0) {
+  if (burst_read(mag_address, mag_xout0, raw, sizeof(raw)) != 0) {
     note_i2c_error();
     return false;
   }
@@ -320,13 +572,42 @@ void publish_power(std::uint64_t timestamp_ticks) {
     return;
   }
 
+  const bool pmic_present =
+      (status_bits() & status_pmic_present) != 0U;
+  if (pmic_present) {
+    (void)read_pmic_power();
+  }
+  const Snapshot state = snapshot();
+
   std::uint8_t payload[fairy::protocol::fairy_max_payload]{};
   fairy::protocol::TlvWriter fields(payload, sizeof(payload));
   fields.boolean(
-      static_cast<std::uint16_t>(fairy::protocol::Field::pmic_present), false);
+      static_cast<std::uint16_t>(fairy::protocol::Field::pmic_present),
+      pmic_present);
   fields.string(
       static_cast<std::uint16_t>(fairy::protocol::Field::power_source),
-      "nRF52840 DK - no PMIC/fuel gauge telemetry");
+      pmic_present ? (state.vbus_present ? "nPM1300 VBUS" : "nPM1300 battery")
+                   : "nPM1300 unavailable");
+  if (pmic_present && state.battery_millivolts != 0U) {
+    fields.u16(
+        static_cast<std::uint16_t>(fairy::protocol::Field::battery_millivolts),
+        state.battery_millivolts);
+  }
+  if (pmic_present && state.battery_current_valid) {
+    fields.i32(
+        static_cast<std::uint16_t>(fairy::protocol::Field::battery_current_ma),
+        state.battery_current_ma);
+  }
+  if (pmic_present) {
+    fields.string(
+        static_cast<std::uint16_t>(fairy::protocol::Field::detail),
+        charge_status_text(state.charger_status, state.vbus_present));
+    if (state.charger_error_reason != 0U) {
+      fields.string(
+          static_cast<std::uint16_t>(fairy::protocol::Field::reason),
+          charge_error_text(state.charger_error_reason));
+    }
+  }
 
   if (fields.good()) {
     (void)publish_record(fairy::protocol::RecordType::power_status,
@@ -419,11 +700,11 @@ void sensor_worker(void *, void *, void *) {
   }
   set_status_bit(status_imu_present, imu_present);
   set_status_bit(status_magnetometer_present, mag_present);
-  set_status_bit(status_pmic_present, false);
 
-  korora_debug::log("LOCAL_SENSOR i2c=%u imu=%u mag=%u pmic=0\r\n",
+  korora_debug::log("LOCAL_SENSOR i2c=%u imu=%u mag=%u pmic=%u\r\n",
                     bus_ready ? 1U : 0U, imu_present ? 1U : 0U,
-                    mag_present ? 1U : 0U);
+                    mag_present ? 1U : 0U,
+                    (status_bits() & status_pmic_present) != 0U ? 1U : 0U);
 
   RawSample latest{};
   std::uint64_t next_live_ticks = 0U;
@@ -479,12 +760,18 @@ void sensor_worker(void *, void *, void *) {
 
 int initialize() {
   k_mutex_init(&state_mutex);
+  k_mutex_init(&i2c_mutex);
   atomic_clear(&session_id);
   atomic_clear(&record_id);
   atomic_clear(&chunk_sequence);
   atomic_clear(&flush_requested);
   current_state = {};
   chunk_count = 0U;
+
+  const bool bus_ready = device_is_ready(i2c_bus);
+  set_status_bit(status_i2c_ready, bus_ready);
+  const bool pmic_present = bus_ready && probe_pmic();
+  set_status_bit(status_pmic_present, pmic_present);
 
   sensor_thread_id = k_thread_create(
       &sensor_thread_data, sensor_stack, K_THREAD_STACK_SIZEOF(sensor_stack),
@@ -504,6 +791,24 @@ void set_session(std::uint32_t new_session) {
     atomic_set(&flush_requested, 1);
   }
 }
+
+bool set_status_led(std::uint8_t led_index, bool enabled) {
+  if (led_index > 2U ||
+      (status_bits() & status_pmic_present) == 0U) {
+    return false;
+  }
+
+  const std::uint16_t reg =
+      (enabled ? pmic_led_set_base : pmic_led_clear_base) +
+      2U * led_index;
+  if (pmic_write(reg, 1U) != 0) {
+    note_i2c_error();
+    return false;
+  }
+  return true;
+}
+
+bool set_ready_led(bool enabled) { return set_status_led(0U, enabled); }
 
 Snapshot snapshot() {
   k_mutex_lock(&state_mutex, K_FOREVER);

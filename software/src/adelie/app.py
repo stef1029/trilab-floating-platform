@@ -204,6 +204,9 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(modes)
 
         self.local_sensor_panel = LocalSensorsPanel()
+        self.local_sensor_panel.status_led_requested.connect(
+            self.controller.set_status_led
+        )
         root_layout.addWidget(self.local_sensor_panel)
 
         diagnostics = QHBoxLayout()
