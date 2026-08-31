@@ -15,28 +15,42 @@
 namespace fairy_outputs {
 namespace {
 
-inline constexpr std::uint32_t rgb_period = 31'999;
-inline constexpr std::uint32_t valve_period = 2'559;
-inline constexpr std::uint32_t valve_latch_pulse_us = 8'000;
-inline constexpr std::uint32_t valve_startup_close_pulse_us = 10'000;
+/*
+ * Output ownership for the reward-port PCB (STM32G071):
+ *   RGB red   PB4 / TIM3_CH1
+ *   RGB green PB5 / TIM3_CH2
+ *   RGB blue  PB0 / TIM3_CH3
+ *   Valve     PA8 / TIM1_CH1 -> DRV8837 IN1 (IN2 is tied to GND)
+ *   Audio     PA4 / DAC1_OUT1
+ *   Amp enable/shutdown and IR enable remain board-profile/light-sensor owned.
+ */
+
+/*
+ * Output peripheral clocks are 64 MHz on the Fairy STM32G071 profile.
+ * TIM2, used as the common timestamp timebase elsewhere in the firmware,
+ * runs at 16 MHz; keep those two domains explicit instead of mixing them.
+ */
+inline constexpr std::uint32_t output_timer_hz = 64'000'000;
+inline constexpr std::uint32_t common_timer_hz = 16'000'000;
+inline constexpr std::uint32_t ticks_per_us = common_timer_hz / 1'000'000U;
+
+inline constexpr std::uint32_t rgb_pwm_hz = 2'000;
+inline constexpr std::uint32_t rgb_period = output_timer_hz / rgb_pwm_hz - 1U;
+inline constexpr std::uint32_t valve_pwm_hz = 25'000;
+inline constexpr std::uint32_t valve_period =
+    output_timer_hz / valve_pwm_hz - 1U;
+
 /* 64 MHz TIM6 clock / (1332 + 1) = 48012.003 samples per second. */
 inline constexpr std::uint32_t audio_sample_rate = 48'012;
 inline constexpr std::uint32_t maximum_audio_frequency_hz = 20'000;
-/*
- * A half-buffer is about 10.7 ms. This leaves enough foreground time for one
- * maximum-size RS485 response while audio synthesis stays out of interrupt
- * context.
- */
-inline constexpr std::size_t audio_buffer_samples = 1024;
+inline constexpr std::size_t audio_buffer_samples = 256;
 inline constexpr std::size_t audio_half_buffer_samples =
     audio_buffer_samples / 2U;
 inline constexpr std::size_t noise_filter_stage_count = 4;
 inline constexpr std::uint32_t minimum_noise_frequency_hz = 60;
 inline constexpr std::uint32_t minimum_noise_bandwidth_hz = 500;
 inline constexpr std::uint32_t hard_maximum_valve_on_us = 250'000;
-inline constexpr std::int32_t q15_one = 32'767;
 inline constexpr std::int32_t q15_filter_limit = 16'383;
-inline constexpr std::uint32_t common_timer_hz = 16'000'000;
 inline constexpr std::uint32_t audio_half_deadline_ticks =
     static_cast<std::uint32_t>(
         (static_cast<std::uint64_t>(audio_half_buffer_samples) *
@@ -55,18 +69,15 @@ inline constexpr std::uint32_t audio_ramp_phase_step =
 /*
  * One quadrant of a signed Q15 sine wave. The remaining quadrants are
  * reconstructed from symmetry. This avoids floating point and std::sin() in
- * the real-time refill path on the Cortex M0+.
+ * the DMA interrupt on the Cortex M0+.
  */
 constexpr std::array<std::int16_t, 65> sine_quarter{{
-    0,     804,   1608,  2410,  3212,  4011,  4808,  5602,
-    6393,  7179,  7962,  8739,  9512,  10278, 11039, 11793,
-    12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530,
-    18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594,
-    23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790,
-    27245, 27683, 28105, 28510, 28898, 29268, 29621, 29956,
-    30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971,
-    32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757,
-    32767,
+    0,     804,   1608,  2410,  3212,  4011,  4808,  5602,  6393,  7179,  7962,
+    8739,  9512,  10278, 11039, 11793, 12539, 13279, 14010, 14732, 15446, 16151,
+    16846, 17530, 18204, 18868, 19519, 20159, 20787, 21403, 22005, 22594, 23170,
+    23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510,
+    28898, 29268, 29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785,
+    31971, 32137, 32285, 32412, 32521, 32609, 32678, 32728, 32757, 32767,
 }};
 
 /*
@@ -88,19 +99,18 @@ struct BiquadQ15 {
   std::int16_t y2{};
 
   std::int16_t process(std::int16_t input) {
-    std::int32_t accumulator =
-        static_cast<std::int32_t>(b0) * input;
+    std::int32_t accumulator = static_cast<std::int32_t>(b0) * input;
     accumulator += static_cast<std::int32_t>(b1) * x1;
     accumulator += static_cast<std::int32_t>(b2) * x2;
     accumulator -= static_cast<std::int32_t>(a1) * y1;
     accumulator -= static_cast<std::int32_t>(a2) * y2;
 
-    const std::int32_t rounded =
-        accumulator >= 0 ? accumulator + (1 << 13)
-                         : accumulator + ((1 << 13) - 1);
-    const std::int16_t output = static_cast<std::int16_t>(
-        std::clamp<std::int32_t>(rounded >> 14U, -q15_filter_limit,
-                                 q15_filter_limit));
+    const std::int32_t rounded = accumulator >= 0
+                                     ? accumulator + (1 << 13)
+                                     : accumulator + ((1 << 13) - 1);
+    const std::int16_t output =
+        static_cast<std::int16_t>(std::clamp<std::int32_t>(
+            rounded >> 14U, -q15_filter_limit, q15_filter_limit));
     x2 = x1;
     x1 = input;
     y2 = y1;
@@ -126,15 +136,14 @@ fairy::StaticQueue<Event, 16> events;
 ValveConfiguration valve_config;
 enum class ValvePhase : std::uint8_t {
   idle,
-  opening,
-  open_dwell,
-  closing,
+  spike,
+  hold,
 };
 ValvePhase valve_phase;
 std::uint64_t valve_started_ticks;
 std::uint64_t valve_phase_deadline_ticks;
+std::uint64_t valve_stop_ticks;
 std::uint64_t last_valve_stop_ticks;
-std::uint32_t valve_open_dwell_us;
 
 std::uint64_t rgb_stop_ticks;
 std::uint64_t audio_stop_ticks;
@@ -158,31 +167,37 @@ volatile std::uint32_t audio_dma_callback_gap_count;
 volatile std::uint32_t audio_dma_max_fill_ticks;
 volatile std::uint32_t audio_dma_max_callback_gap_ticks;
 volatile std::uint32_t audio_dma_last_callback_tick;
-volatile std::uint8_t audio_refill_pending;
-volatile std::uint32_t audio_first_refill_tick;
-volatile std::uint32_t audio_second_refill_tick;
 std::uint64_t audio_last_diagnostic_ticks;
 bool audio_active;
 bool ir_enabled;
 
+std::uint64_t ticks_from_us(std::uint64_t microseconds) {
+  return microseconds * ticks_per_us;
+}
+
+std::uint64_t ticks_from_ms(std::uint32_t milliseconds) {
+  return static_cast<std::uint64_t>(milliseconds) * 1000ULL * ticks_per_us;
+}
+
+std::uint32_t event_duration_us(std::uint32_t milliseconds) {
+  constexpr std::uint32_t maximum_ms =
+      std::numeric_limits<std::uint32_t>::max() / 1000U;
+  return milliseconds > maximum_ms ? std::numeric_limits<std::uint32_t>::max()
+                                   : milliseconds * 1000U;
+}
+
 std::uint32_t duty_to_compare(std::uint16_t per_mille) {
+  const std::uint16_t limited = std::min<std::uint16_t>(per_mille, 1000U);
   return static_cast<std::uint32_t>(
-      (static_cast<std::uint64_t>(per_mille) * (valve_period + 1U)) / 1000U);
+      (static_cast<std::uint64_t>(limited) * (valve_period + 1U)) / 1000U);
 }
 
-void set_valve_outputs(std::uint16_t in1_per_mille,
-                       std::uint16_t in2_per_mille) {
+void set_valve_duty(std::uint16_t duty_per_mille) {
   __HAL_TIM_SET_COMPARE(&valve_timer, TIM_CHANNEL_1,
-                        duty_to_compare(in1_per_mille));
-  __HAL_TIM_SET_COMPARE(&valve_timer, TIM_CHANNEL_2,
-                        duty_to_compare(in2_per_mille));
+                        duty_to_compare(duty_per_mille));
 }
 
-void valve_idle() { set_valve_outputs(0, 0); }
-
-void valve_open_pulse() { set_valve_outputs(1000, 0); }
-
-void valve_close_pulse() { set_valve_outputs(0, 1000); }
+void valve_idle() { set_valve_duty(0); }
 
 void set_rgb_channel(std::uint32_t channel, std::uint8_t value) {
   const std::uint32_t compare =
@@ -199,14 +214,14 @@ std::int32_t sine_q15(std::uint32_t phase) {
   const std::uint32_t quadrant = phase >> 30U;
   const std::uint32_t offset = (phase >> 24U) & 0x3FU;
   switch (quadrant) {
-    case 0:
-      return sine_quarter[offset];
-    case 1:
-      return sine_quarter[64U - offset];
-    case 2:
-      return -sine_quarter[offset];
-    default:
-      return -sine_quarter[64U - offset];
+  case 0:
+    return sine_quarter[offset];
+  case 1:
+    return sine_quarter[64U - offset];
+  case 2:
+    return -sine_quarter[offset];
+  default:
+    return -sine_quarter[64U - offset];
   }
 }
 
@@ -266,12 +281,10 @@ NoiseFilterConfiguration make_noise_filter(std::uint32_t low_hz,
   constexpr double butterworth_q0 = 0.541196100146197;
   constexpr double butterworth_q1 = 1.306562964876377;
 
-  const double low_omega =
-      2.0 * pi * static_cast<double>(low_hz) /
-      static_cast<double>(audio_sample_rate);
-  const double high_omega =
-      2.0 * pi * static_cast<double>(high_hz) /
-      static_cast<double>(audio_sample_rate);
+  const double low_omega = 2.0 * pi * static_cast<double>(low_hz) /
+                           static_cast<double>(audio_sample_rate);
+  const double high_omega = 2.0 * pi * static_cast<double>(high_hz) /
+                            static_cast<double>(audio_sample_rate);
   const double low_sine = std::sin(low_omega);
   const double low_cosine = std::cos(low_omega);
   const double high_sine = std::sin(high_omega);
@@ -281,19 +294,15 @@ NoiseFilterConfiguration make_noise_filter(std::uint32_t low_hz,
   /*
    * Put the lower Q sections first. They remove out of band energy before
    * the more resonant sections and preserve fixed point headroom.
-  */
-  configuration.stages[0] =
-      butterworth_section(BiquadKind::high_pass, low_sine, low_cosine,
-                          butterworth_q0);
-  configuration.stages[1] =
-      butterworth_section(BiquadKind::low_pass, high_sine, high_cosine,
-                          butterworth_q0);
-  configuration.stages[2] =
-      butterworth_section(BiquadKind::high_pass, low_sine, low_cosine,
-                          butterworth_q1);
-  configuration.stages[3] =
-      butterworth_section(BiquadKind::low_pass, high_sine, high_cosine,
-                          butterworth_q1);
+   */
+  configuration.stages[0] = butterworth_section(BiquadKind::high_pass, low_sine,
+                                                low_cosine, butterworth_q0);
+  configuration.stages[1] = butterworth_section(BiquadKind::low_pass, high_sine,
+                                                high_cosine, butterworth_q0);
+  configuration.stages[2] = butterworth_section(BiquadKind::high_pass, low_sine,
+                                                low_cosine, butterworth_q1);
+  configuration.stages[3] = butterworth_section(BiquadKind::low_pass, high_sine,
+                                                high_cosine, butterworth_q1);
 
   /*
    * A uniform random source has RMS 1/sqrt(3). The source is divided by four
@@ -304,12 +313,11 @@ NoiseFilterConfiguration make_noise_filter(std::uint32_t low_hz,
   const double occupied_fraction =
       (2.0 * static_cast<double>(high_hz - low_hz)) /
       static_cast<double>(audio_sample_rate);
-  const double normalization =
-      std::sqrt(3.0) / std::sqrt(occupied_fraction);
+  const double normalization = std::sqrt(3.0) / std::sqrt(occupied_fraction);
   constexpr double maximum_normalization = 1024.0;
   const double limited = std::min(normalization, maximum_normalization);
-  configuration.normalization_q16 = static_cast<std::uint32_t>(
-      std::llround(limited * 65'536.0));
+  configuration.normalization_q16 =
+      static_cast<std::uint32_t>(std::llround(limited * 65'536.0));
   return configuration;
 }
 
@@ -327,18 +335,16 @@ std::int32_t next_signal_q15() {
     /* Four times headroom prevents resonant intermediate stages clipping. */
     const std::int32_t random_q15 =
         static_cast<std::int32_t>(random_state >> 16U) - 32'768;
-    std::int16_t filtered_q15 = static_cast<std::int16_t>(
-        random_q15 / 4);
-    for (auto& stage : noise_filter) {
+    std::int16_t filtered_q15 = static_cast<std::int16_t>(random_q15 / 4);
+    for (auto &stage : noise_filter) {
       filtered_q15 = stage.process(filtered_q15);
     }
 
     const std::int64_t normalized_q15 =
-        (static_cast<std::int64_t>(filtered_q15) *
-         noise_normalization_q16) >>
+        (static_cast<std::int64_t>(filtered_q15) * noise_normalization_q16) >>
         16U;
-    return static_cast<std::int32_t>(std::clamp<std::int64_t>(
-        normalized_q15, -32'768, 32'767));
+    return static_cast<std::int32_t>(
+        std::clamp<std::int64_t>(normalized_q15, -32'768, 32'767));
   }
 
   return 0;
@@ -347,34 +353,31 @@ std::int32_t next_signal_q15() {
 void fill_audio(std::size_t offset, std::size_t count) {
   for (std::size_t index = 0; index < count; ++index) {
     if (audio_stopping) {
-      audio_ramp_phase =
-          audio_ramp_phase > audio_ramp_phase_step
-              ? audio_ramp_phase - audio_ramp_phase_step
-              : 0U;
+      audio_ramp_phase = audio_ramp_phase > audio_ramp_phase_step
+                             ? audio_ramp_phase - audio_ramp_phase_step
+                             : 0U;
     } else {
-      audio_ramp_phase =
-          std::min(audio_ramp_phase_end,
-                   audio_ramp_phase + audio_ramp_phase_step);
+      audio_ramp_phase = std::min(audio_ramp_phase_end,
+                                  audio_ramp_phase + audio_ramp_phase_step);
     }
     audio_gain_q15 = raised_cosine_gain_q15(audio_ramp_phase);
 
     const std::int32_t signal_q15 = next_signal_q15();
     const std::int32_t amplitude_scaled =
         (signal_q15 * static_cast<std::int32_t>(audio_amplitude)) >> 15U;
-    const std::int32_t scaled =
-        (amplitude_scaled * audio_gain_q15) >> 15U;
+    const std::int32_t scaled = (amplitude_scaled * audio_gain_q15) >> 15U;
     audio_buffer[offset + index] = static_cast<std::uint32_t>(
         std::clamp<std::int32_t>(2048 + scaled, 0, 4095));
   }
 }
 
-void update_maximum(volatile std::uint32_t& maximum, std::uint32_t value) {
+void update_maximum(volatile std::uint32_t &maximum, std::uint32_t value) {
   if (value > maximum) {
     maximum = value;
   }
 }
 
-void request_audio_refill(bool first_half) {
+void refill_audio(std::size_t offset, bool first_half) {
   const std::uint32_t callback_tick = TIM2->CNT;
   const std::uint32_t previous_tick = audio_dma_last_callback_tick;
   audio_dma_last_callback_tick = callback_tick;
@@ -389,57 +392,15 @@ void request_audio_refill(bool first_half) {
 
   if (first_half) {
     ++audio_dma_half_count;
-    audio_first_refill_tick = callback_tick;
   } else {
     ++audio_dma_full_count;
-    audio_second_refill_tick = callback_tick;
   }
 
-  const std::uint8_t pending_bit = first_half ? 0x01U : 0x02U;
-  if ((audio_refill_pending & pending_bit) != 0U) {
-    /* The DMA has reached this half again before foreground serviced it. */
+  fill_audio(offset, audio_half_buffer_samples);
+  const std::uint32_t elapsed = TIM2->CNT - callback_tick;
+  update_maximum(audio_dma_max_fill_ticks, elapsed);
+  if (elapsed >= audio_half_deadline_ticks) {
     ++audio_dma_late_fill_count;
-    audio_fault = true;
-  }
-  audio_refill_pending |= pending_bit;
-}
-
-void service_audio_refills() {
-  const std::uint32_t primask = __get_PRIMASK();
-  __disable_irq();
-  const std::uint8_t pending = audio_refill_pending;
-  const std::uint32_t first_requested = audio_first_refill_tick;
-  const std::uint32_t second_requested = audio_second_refill_tick;
-  audio_refill_pending = 0;
-  if (primask == 0U) {
-    __enable_irq();
-  }
-
-  if (!audio_engine_running || pending == 0U) {
-    return;
-  }
-
-  const auto service_half = [](std::size_t offset,
-                               std::uint32_t requested_tick) {
-    if (TIM2->CNT - requested_tick >= audio_half_deadline_ticks) {
-      ++audio_dma_late_fill_count;
-      audio_fault = true;
-      return;
-    }
-    const std::uint32_t fill_started = TIM2->CNT;
-    fill_audio(offset, audio_half_buffer_samples);
-    update_maximum(audio_dma_max_fill_ticks, TIM2->CNT - fill_started);
-    if (TIM2->CNT - requested_tick >= audio_half_deadline_ticks) {
-      ++audio_dma_late_fill_count;
-      audio_fault = true;
-    }
-  };
-
-  if ((pending & 0x01U) != 0U) {
-    service_half(0, first_requested);
-  }
-  if ((pending & 0x02U) != 0U && !audio_fault) {
-    service_half(audio_half_buffer_samples, second_requested);
   }
 }
 
@@ -452,13 +413,46 @@ void reset_audio_diagnostics() {
   audio_dma_max_fill_ticks = 0;
   audio_dma_max_callback_gap_ticks = 0;
   audio_dma_last_callback_tick = 0;
-  audio_refill_pending = 0;
-  audio_first_refill_tick = 0;
-  audio_second_refill_tick = 0;
+}
+
+void configure_rgb_gpio_safe() {
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  constexpr std::uint32_t pins = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5;
+  HAL_GPIO_WritePin(GPIOB, pins, GPIO_PIN_RESET);
+
+  GPIO_InitTypeDef gpio{};
+  gpio.Pin = pins;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &gpio);
+}
+
+void connect_rgb_gpio_to_tim3() {
+  GPIO_InitTypeDef gpio{};
+  gpio.Pin = GPIO_PIN_0 | GPIO_PIN_4 | GPIO_PIN_5;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  gpio.Alternate = GPIO_AF1_TIM3;
+  HAL_GPIO_Init(GPIOB, &gpio);
 }
 
 void initialize_rgb() {
+  /*
+   * Final PCB and Nucleo prototype use the same RGB timer mapping:
+   *   PB4 = TIM3_CH1 (red)
+   *   PB5 = TIM3_CH2 (green)
+   *   PB0 = TIM3_CH3 (blue)
+   *
+   * Drive the pins low as ordinary GPIOs first. Only hand them to TIM3 after
+   * all compare registers are known to be zero, preventing a startup flash.
+   */
+  configure_rgb_gpio_safe();
   __HAL_RCC_TIM3_CLK_ENABLE();
+
+  rgb_timer = {};
   rgb_timer.Instance = TIM3;
   rgb_timer.Init.Prescaler = 0;
   rgb_timer.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -468,6 +462,7 @@ void initialize_rgb() {
   if (HAL_TIM_PWM_Init(&rgb_timer) != HAL_OK) {
     Error_Handler();
   }
+
   TIM_OC_InitTypeDef pwm{};
   pwm.OCMode = TIM_OCMODE_PWM1;
   pwm.Pulse = 0;
@@ -475,16 +470,50 @@ void initialize_rgb() {
   pwm.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&rgb_timer, &pwm, TIM_CHANNEL_1) != HAL_OK ||
       HAL_TIM_PWM_ConfigChannel(&rgb_timer, &pwm, TIM_CHANNEL_2) != HAL_OK ||
-      HAL_TIM_PWM_ConfigChannel(&rgb_timer, &pwm, TIM_CHANNEL_3) != HAL_OK ||
-      HAL_TIM_PWM_Start(&rgb_timer, TIM_CHANNEL_1) != HAL_OK ||
+      HAL_TIM_PWM_ConfigChannel(&rgb_timer, &pwm, TIM_CHANNEL_3) != HAL_OK) {
+    Error_Handler();
+  }
+
+  __HAL_TIM_SET_COMPARE(&rgb_timer, TIM_CHANNEL_1, 0U);
+  __HAL_TIM_SET_COMPARE(&rgb_timer, TIM_CHANNEL_2, 0U);
+  __HAL_TIM_SET_COMPARE(&rgb_timer, TIM_CHANNEL_3, 0U);
+  connect_rgb_gpio_to_tim3();
+
+  if (HAL_TIM_PWM_Start(&rgb_timer, TIM_CHANNEL_1) != HAL_OK ||
       HAL_TIM_PWM_Start(&rgb_timer, TIM_CHANNEL_2) != HAL_OK ||
       HAL_TIM_PWM_Start(&rgb_timer, TIM_CHANNEL_3) != HAL_OK) {
     Error_Handler();
   }
 }
 
+void configure_valve_gpio_safe() {
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /* DRV8837 IN2 is hard-wired low; PA8/TIM1_CH1 is the sole drive input. */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+  GPIO_InitTypeDef gpio{};
+  gpio.Pin = GPIO_PIN_8;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &gpio);
+}
+
+void connect_valve_gpio_to_tim1() {
+  GPIO_InitTypeDef gpio{};
+  gpio.Pin = GPIO_PIN_8;
+  gpio.Mode = GPIO_MODE_AF_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  gpio.Alternate = GPIO_AF2_TIM1;
+  HAL_GPIO_Init(GPIOA, &gpio);
+}
+
 void initialize_valve() {
+  configure_valve_gpio_safe();
   __HAL_RCC_TIM1_CLK_ENABLE();
+
+  valve_timer = {};
   valve_timer.Instance = TIM1;
   valve_timer.Init.Prescaler = 0;
   valve_timer.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -495,27 +524,41 @@ void initialize_valve() {
   if (HAL_TIM_PWM_Init(&valve_timer) != HAL_OK) {
     Error_Handler();
   }
+
   TIM_OC_InitTypeDef pwm{};
   pwm.OCMode = TIM_OCMODE_PWM1;
   pwm.Pulse = 0;
   pwm.OCPolarity = TIM_OCPOLARITY_HIGH;
-  pwm.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   pwm.OCFastMode = TIM_OCFAST_DISABLE;
   pwm.OCIdleState = TIM_OCIDLESTATE_RESET;
-  pwm.OCNIdleState = TIM_OCIDLESTATE_RESET;
-  if (HAL_TIM_PWM_ConfigChannel(&valve_timer, &pwm, TIM_CHANNEL_1) != HAL_OK ||
-      HAL_TIM_PWM_ConfigChannel(&valve_timer, &pwm, TIM_CHANNEL_2) != HAL_OK ||
-      HAL_TIM_PWM_Start(&valve_timer, TIM_CHANNEL_1) != HAL_OK ||
-      HAL_TIM_PWM_Start(&valve_timer, TIM_CHANNEL_2) != HAL_OK) {
+  if (HAL_TIM_PWM_ConfigChannel(&valve_timer, &pwm, TIM_CHANNEL_1) != HAL_OK) {
+    Error_Handler();
+  }
+
+  __HAL_TIM_SET_COMPARE(&valve_timer, TIM_CHANNEL_1, 0U);
+  connect_valve_gpio_to_tim1();
+  if (HAL_TIM_PWM_Start(&valve_timer, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
 }
 
+void configure_audio_gpio() {
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  GPIO_InitTypeDef gpio{};
+  gpio.Pin = GPIO_PIN_4;
+  gpio.Mode = GPIO_MODE_ANALOG;
+  gpio.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &gpio);
+}
+
 void initialize_audio() {
+  /* PA4 is DAC1_OUT1. The amplifier remains disabled through board_profile. */
+  configure_audio_gpio();
   __HAL_RCC_DAC1_CLK_ENABLE();
   __HAL_RCC_DMA1_CLK_ENABLE();
   __HAL_RCC_TIM6_CLK_ENABLE();
 
+  dac = {};
   dac.Instance = DAC1;
   if (HAL_DAC_Init(&dac) != HAL_OK) {
     Error_Handler();
@@ -529,6 +572,7 @@ void initialize_audio() {
     Error_Handler();
   }
 
+  dac_dma = {};
   dac_dma.Instance = DMA1_Channel1;
   dac_dma.Init.Request = DMA_REQUEST_DAC1_CHANNEL1;
   dac_dma.Init.Direction = DMA_MEMORY_TO_PERIPH;
@@ -543,8 +587,10 @@ void initialize_audio() {
   }
   __HAL_LINKDMA(&dac, DMA_Handle1, dac_dma);
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 2, 0);
+  HAL_NVIC_ClearPendingIRQ(DMA1_Channel1_IRQn);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
+  audio_timer = {};
   audio_timer.Instance = TIM6;
   audio_timer.Init.Prescaler = 0;
   audio_timer.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -560,7 +606,7 @@ void initialize_audio() {
     Error_Handler();
   }
 
-  audio_buffer.fill(2048);
+  audio_buffer.fill(2048U);
   audio_engine_running = false;
   audio_active = false;
   audio_stopping = false;
@@ -572,8 +618,7 @@ void initialize_audio() {
   reset_audio_diagnostics();
   audio_last_diagnostic_ticks = 0;
   if (HAL_DAC_Start(&dac, DAC_CHANNEL_1) != HAL_OK ||
-      HAL_DAC_SetValue(&dac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U) !=
-          HAL_OK) {
+      HAL_DAC_SetValue(&dac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U) != HAL_OK) {
     Error_Handler();
   }
 }
@@ -608,12 +653,6 @@ void stop_audio_engine() {
     (void)HAL_TIM_Base_Stop(&audio_timer);
     (void)HAL_DAC_Stop_DMA(&dac, DAC_CHANNEL_1);
   }
-  const std::uint32_t primask = __get_PRIMASK();
-  __disable_irq();
-  audio_refill_pending = 0;
-  if (primask == 0U) {
-    __enable_irq();
-  }
   (void)HAL_DAC_Start(&dac, DAC_CHANNEL_1);
   (void)HAL_DAC_SetValue(&dac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U);
 }
@@ -644,56 +683,60 @@ void begin_audio_stop() {
 
 void finish_valve_cycle(std::uint64_t now_ticks) {
   valve_idle();
+  const bool was_active = valve_phase != ValvePhase::idle;
   valve_phase = ValvePhase::idle;
   valve_phase_deadline_ticks = 0;
+  valve_stop_ticks = 0;
   last_valve_stop_ticks = now_ticks;
-  queue_event(EventKind::valve_stopped, now_ticks, 0,
-              static_cast<std::uint32_t>((now_ticks - valve_started_ticks) /
-                                         16U));
+  if (was_active) {
+    queue_event(EventKind::valve_stopped, now_ticks, 0,
+                static_cast<std::uint32_t>((now_ticks - valve_started_ticks) /
+                                           ticks_per_us));
+  }
 }
 
-void begin_valve_close(std::uint64_t now_ticks) {
-  valve_close_pulse();
-  valve_phase = ValvePhase::closing;
-  valve_phase_deadline_ticks =
-      now_ticks + static_cast<std::uint64_t>(valve_latch_pulse_us) * 16U;
-}
-
-}  // namespace
+} // namespace
 
 void initialize() {
   events.clear();
+  rgb_stop_ticks = 0;
+  audio_stop_ticks = 0;
+  ir_enabled = false;
+
+  valve_config = ValveConfiguration{};
   valve_phase = ValvePhase::idle;
+  valve_started_ticks = 0;
   valve_phase_deadline_ticks = 0;
+  valve_stop_ticks = 0;
   last_valve_stop_ticks = 0;
-  valve_open_dwell_us = 0;
-  if constexpr (fairy_board::prototype) {
-    /*
-     * The wired prototype has a fixed 5 V valve supply. Arm the bounded
-     * latching defaults even if Adelie has not sent CONFIGURE_VALVE yet.
-     */
-    valve_config = ValveConfiguration{};
-    valve_config.valid = true;
-  }
+  /* Preserve the existing prototype convenience defaults when supplied by
+   * ValveConfiguration's default member initializers. */
+  valve_config.valid = true;
+
+  /* Board-profile outputs are disabled before any waveform peripheral starts.
+   */
   fairy_board::set_amplifier_enabled(false);
   fairy_board::set_ir_enabled(false);
+
   initialize_rgb();
   initialize_valve();
   initialize_audio();
-  all_safe();
 
-  /* Match the legacy controller: establish the known closed latch at boot. */
-  valve_close_pulse();
-  HAL_Delay((valve_startup_close_pulse_us + 999U) / 1000U);
+  /* The light-sensor module owns the IR emitter pin after its own init. */
+  fairy_light::set_emitter_enabled(false);
   valve_idle();
+  set_rgb_channel(TIM_CHANNEL_1, 0U);
+  set_rgb_channel(TIM_CHANNEL_2, 0U);
+  set_rgb_channel(TIM_CHANNEL_3, 0U);
   events.clear();
+
+  fairy_debug::log(
+      "OUTPUTS_READY rgb=PB4/PB5/PB0@2kHz valve=PA8@25kHz audio=PA4\r\n");
 }
 
 void service(std::uint64_t now_ticks) {
-  service_audio_refills();
-  if (audio_active &&
-      now_ticks - audio_last_diagnostic_ticks >=
-          audio_diagnostic_interval_ticks) {
+  if (audio_active && now_ticks - audio_last_diagnostic_ticks >=
+                          audio_diagnostic_interval_ticks) {
     const std::uint32_t primask = __get_PRIMASK();
     __disable_irq();
     const std::uint32_t irq_count = audio_dma_irq_count;
@@ -722,8 +765,7 @@ void service(std::uint64_t now_ticks) {
   if (rgb_stop_ticks != 0U && now_ticks >= rgb_stop_ticks) {
     set_rgb(0, 0, 0, 0, now_ticks);
   }
-  if (audio_active && audio_stop_ticks != 0U &&
-      now_ticks >= audio_stop_ticks) {
+  if (audio_active && audio_stop_ticks != 0U && now_ticks >= audio_stop_ticks) {
     begin_audio_stop();
   }
   if (audio_active && audio_stopping && audio_gain_q15 == 0) {
@@ -735,23 +777,22 @@ void service(std::uint64_t now_ticks) {
   if (valve_phase != ValvePhase::idle &&
       now_ticks >= valve_phase_deadline_ticks) {
     switch (valve_phase) {
-      case ValvePhase::opening:
-        valve_idle();
-        valve_phase = ValvePhase::open_dwell;
-        valve_phase_deadline_ticks =
-            now_ticks + static_cast<std::uint64_t>(valve_open_dwell_us) * 16U;
-        break;
-
-      case ValvePhase::open_dwell:
-        begin_valve_close(now_ticks);
-        break;
-
-      case ValvePhase::closing:
+    case ValvePhase::spike:
+      if (now_ticks >= valve_stop_ticks) {
         finish_valve_cycle(now_ticks);
-        break;
+      } else {
+        set_valve_duty(valve_config.hold_duty_per_mille);
+        valve_phase = ValvePhase::hold;
+        valve_phase_deadline_ticks = valve_stop_ticks;
+      }
+      break;
 
-      case ValvePhase::idle:
-        break;
+    case ValvePhase::hold:
+      finish_valve_cycle(now_ticks);
+      break;
+
+    case ValvePhase::idle:
+      break;
     }
   }
 }
@@ -759,13 +800,14 @@ void service(std::uint64_t now_ticks) {
 void all_safe(std::uint64_t now_ticks) {
   set_rgb(0, 0, 0, 0, now_ticks);
   finish_audio(now_ticks);
-  if (valve_phase == ValvePhase::opening ||
-      valve_phase == ValvePhase::open_dwell) {
-    /* A stop, timeout, or session change must actively re-latch closed. */
-    begin_valve_close(now_ticks);
-  } else if (valve_phase == ValvePhase::idle) {
+
+  /* DRV8837 IN2 is grounded: safe state is simply PA8/TIM1_CH1 = 0. */
+  if (valve_phase != ValvePhase::idle) {
+    finish_valve_cycle(now_ticks);
+  } else {
     valve_idle();
   }
+
   if (ir_enabled) {
     set_ir(false, now_ticks);
   } else {
@@ -779,12 +821,12 @@ void set_rgb(std::uint8_t red, std::uint8_t green, std::uint8_t blue,
   set_rgb_channel(TIM_CHANNEL_2, green);
   set_rgb_channel(TIM_CHANNEL_3, blue);
   rgb_stop_ticks =
-      duration_ms == 0U ? 0U : now_ticks + duration_ms * 16'000ULL;
-  const std::uint32_t packed =
-      static_cast<std::uint32_t>(red) |
-      (static_cast<std::uint32_t>(green) << 8U) |
-      (static_cast<std::uint32_t>(blue) << 16U);
-  queue_event(EventKind::rgb, now_ticks, packed, duration_ms * 1000U);
+      duration_ms == 0U ? 0U : now_ticks + ticks_from_ms(duration_ms);
+  const std::uint32_t packed = static_cast<std::uint32_t>(red) |
+                               (static_cast<std::uint32_t>(green) << 8U) |
+                               (static_cast<std::uint32_t>(blue) << 16U);
+  queue_event(EventKind::rgb, now_ticks, packed,
+              event_duration_us(duration_ms));
 }
 
 void set_ir(bool enabled, std::uint64_t now_ticks) {
@@ -794,8 +836,7 @@ void set_ir(bool enabled, std::uint64_t now_ticks) {
 }
 
 fairy::protocol::Status set_audio(AudioMode mode, std::uint32_t frequency_hz,
-                                  std::uint32_t low_hz,
-                                  std::uint32_t high_hz,
+                                  std::uint32_t low_hz, std::uint32_t high_hz,
                                   std::uint16_t amplitude,
                                   std::uint32_t duration_ms,
                                   std::uint64_t now_ticks) {
@@ -806,8 +847,7 @@ fairy::protocol::Status set_audio(AudioMode mode, std::uint32_t frequency_hz,
   if ((mode != AudioMode::tone && mode != AudioMode::white_noise_band) ||
       amplitude > 2047U ||
       (mode == AudioMode::tone &&
-       (frequency_hz < 20U ||
-        frequency_hz > maximum_audio_frequency_hz)) ||
+       (frequency_hz < 20U || frequency_hz > maximum_audio_frequency_hz)) ||
       (mode == AudioMode::white_noise_band &&
        (low_hz < minimum_noise_frequency_hz || high_hz <= low_hz ||
         high_hz > maximum_audio_frequency_hz ||
@@ -831,7 +871,7 @@ fairy::protocol::Status set_audio(AudioMode mode, std::uint32_t frequency_hz,
   reset_audio_diagnostics();
   audio_last_diagnostic_ticks = now_ticks;
   audio_stop_ticks =
-      duration_ms == 0U ? 0U : now_ticks + duration_ms * 16'000ULL;
+      duration_ms == 0U ? 0U : now_ticks + ticks_from_ms(duration_ms);
   tone_phase = 0;
   tone_phase_step =
       mode == AudioMode::tone
@@ -854,91 +894,91 @@ fairy::protocol::Status set_audio(AudioMode mode, std::uint32_t frequency_hz,
 
   fairy_board::set_amplifier_enabled(true);
   queue_event(EventKind::audio_started, now_ticks,
-              static_cast<std::uint32_t>(mode), duration_ms * 1000U);
+              static_cast<std::uint32_t>(mode), event_duration_us(duration_ms));
   return fairy::protocol::Status::ok;
 }
 
-fairy::protocol::Status configure_valve(
-    const ValveConfiguration& configuration) {
+fairy::protocol::Status
+configure_valve(const ValveConfiguration &configuration) {
   if (configuration.vload_mv != 5000U ||
       configuration.spike_duration_us < 1000U ||
       configuration.spike_duration_us > 20'000U ||
+      configuration.spike_duty_per_mille == 0U ||
       configuration.spike_duty_per_mille > 1000U ||
-      configuration.hold_duty_per_mille > 1000U ||
-      configuration.maximum_on_us == 0U ||
+      configuration.hold_duty_per_mille > configuration.spike_duty_per_mille ||
+      configuration.maximum_on_us < configuration.spike_duration_us ||
       configuration.maximum_on_us > hard_maximum_valve_on_us ||
       configuration.minimum_interval_us < 50'000U) {
     return fairy::protocol::Status::invalid_parameter;
   }
+
   valve_config = configuration;
-  /*
-   * Adelie v2 still sends the former spike and hold fields. This board uses
-   * them only for wire compatibility; the two-wire latching valve always
-   * receives a full-duty 8 ms transition pulse and no holding current.
-   */
-  valve_config.spike_duration_us = valve_latch_pulse_us;
-  valve_config.spike_duty_per_mille = 1000;
-  valve_config.hold_duty_per_mille = 0;
   valve_config.valid = true;
   return fairy::protocol::Status::ok;
 }
 
 fairy::protocol::Status actuate_valve(std::uint32_t duration_ms,
-                                     std::uint64_t now_ticks) {
+                                      std::uint64_t now_ticks) {
   if (!valve_config.valid) {
     return fairy::protocol::Status::safety_lock;
   }
-  const std::uint32_t duration_us = duration_ms * 1000U;
+
+  const std::uint64_t duration_us =
+      static_cast<std::uint64_t>(duration_ms) * 1000ULL;
   if (valve_phase != ValvePhase::idle || duration_us == 0U ||
       duration_us > valve_config.maximum_on_us) {
     return fairy::protocol::Status::invalid_parameter;
   }
   if (last_valve_stop_ticks != 0U &&
       now_ticks - last_valve_stop_ticks <
-          static_cast<std::uint64_t>(valve_config.minimum_interval_us) * 16U) {
+          ticks_from_us(valve_config.minimum_interval_us)) {
     return fairy::protocol::Status::busy;
   }
+
   valve_started_ticks = now_ticks;
-  valve_open_dwell_us = duration_us;
-  valve_phase = ValvePhase::opening;
-  valve_phase_deadline_ticks =
-      now_ticks + static_cast<std::uint64_t>(valve_latch_pulse_us) * 16U;
-  valve_open_pulse();
-  queue_event(EventKind::valve_started, now_ticks, 1, duration_us);
+  valve_stop_ticks = now_ticks + duration_us * ticks_per_us;
+  const std::uint32_t spike_us = static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(duration_us, valve_config.spike_duration_us));
+  valve_phase_deadline_ticks = now_ticks + ticks_from_us(spike_us);
+  valve_phase = ValvePhase::spike;
+  set_valve_duty(valve_config.spike_duty_per_mille);
+
+  queue_event(EventKind::valve_started, now_ticks, 1,
+              static_cast<std::uint32_t>(duration_us));
   return fairy::protocol::Status::ok;
 }
 
-bool pop_event(Event& event) { return events.pop(event); }
+bool pop_event(Event &event) { return events.pop(event); }
 
-const ValveConfiguration& valve_configuration() { return valve_config; }
+const ValveConfiguration &valve_configuration() { return valve_config; }
 
 extern "C" void DMA1_Channel1_IRQHandler() {
   ++audio_dma_irq_count;
   HAL_DMA_IRQHandler(&dac_dma);
 }
 
-extern "C" void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef* handle) {
+extern "C" void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *handle) {
   if (handle == &dac && audio_engine_running) {
-    request_audio_refill(true);
+    refill_audio(0, true);
   }
 }
 
-extern "C" void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef* handle) {
+extern "C" void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *handle) {
   if (handle == &dac && audio_engine_running) {
-    request_audio_refill(false);
+    refill_audio(audio_half_buffer_samples, false);
   }
 }
 
-extern "C" void HAL_DAC_ErrorCallbackCh1(DAC_HandleTypeDef* handle) {
+extern "C" void HAL_DAC_ErrorCallbackCh1(DAC_HandleTypeDef *handle) {
   if (handle == &dac) {
     audio_fault = true;
   }
 }
 
-extern "C" void HAL_DAC_DMAUnderrunCallbackCh1(DAC_HandleTypeDef* handle) {
+extern "C" void HAL_DAC_DMAUnderrunCallbackCh1(DAC_HandleTypeDef *handle) {
   if (handle == &dac) {
     audio_fault = true;
   }
 }
 
-}  // namespace fairy_outputs
+} // namespace fairy_outputs

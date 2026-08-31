@@ -29,6 +29,7 @@ namespace {
 #define TIMER_NODE DT_NODELABEL(timer2)
 #define TTL_TIMER_NODE DT_NODELABEL(timer3)
 #define SYNC_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, sync_gpios)
+#define SYNC_DIR_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, sync_dir_gpios)
 #define EVENT_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, event_gpios)
 #define TTL_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, ttl_input_gpios)
 #define GPIOTE_NODE NRF_DT_GPIOTE_NODE(USER_NODE, sync_gpios)
@@ -145,6 +146,12 @@ int acquire_hfxo() {
 }
 
 int configure_gpiote() {
+  // U4 is a dedicated sync transmitter. Its /RE and DE pins are tied
+  // together on SYNC_DIR, so keep the transceiver in transmit mode for the
+  // lifetime of the timebase. The GPIOTE task below drives only SYNC_TX.
+  nrf_gpio_cfg_output(SYNC_DIR_PIN);
+  nrf_gpio_pin_set(SYNC_DIR_PIN);
+
   IRQ_CONNECT(DT_IRQN(GPIOTE_NODE), DT_IRQ(GPIOTE_NODE, priority),
               nrfx_gpiote_irq_handler, gpiote, 0);
   if (!nrfx_gpiote_init_check(gpiote)) {
@@ -303,9 +310,11 @@ int initialize() {
     error = configure_timers();
   }
   korora_debug::log(
-      "TIMEBASE status=%d timer_hz=16000000 sync_hz=4 event_pin=%u "
-      "ttl_pin=%u\r\n",
-      error, static_cast<unsigned int>(EVENT_PIN),
+      "TIMEBASE status=%d timer_hz=16000000 sync_hz=4 sync_pin=%u "
+      "sync_dir_pin=%u event_pin=%u ttl_pin=%u\r\n",
+      error, static_cast<unsigned int>(SYNC_PIN),
+      static_cast<unsigned int>(SYNC_DIR_PIN),
+      static_cast<unsigned int>(EVENT_PIN),
       static_cast<unsigned int>(TTL_PIN));
   return error;
 }

@@ -8,7 +8,7 @@
  * of Fairy boards. The prototype can be built with -DFAIRY_MAX_BOARDS=2.
  */
 #ifndef FAIRY_MAX_BOARDS
-#define FAIRY_MAX_BOARDS 2
+#define FAIRY_MAX_BOARDS 5
 #endif
 
 #ifndef FAIRY_ENABLE_DEBUG_STREAM
@@ -36,7 +36,7 @@ inline constexpr std::uint8_t broadcast_address = 0xFF;
 
 inline constexpr std::uint32_t common_timer_hz = 16'000'000;
 inline constexpr std::uint32_t sync_rate_hz = 4;
-inline constexpr std::uint32_t rs485_baud = 480000;
+inline constexpr std::uint32_t rs485_baud = 460800;
 
 inline constexpr std::uint8_t fairy_address(std::size_t zero_based_slot) {
   return static_cast<std::uint8_t>(fairy_address_base + zero_based_slot);
