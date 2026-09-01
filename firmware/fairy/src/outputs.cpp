@@ -136,12 +136,11 @@ fairy::StaticQueue<Event, 16> events;
 ValveConfiguration valve_config;
 enum class ValvePhase : std::uint8_t {
   idle,
-  spike,
-  hold,
+  active,
 };
+
 ValvePhase valve_phase;
 std::uint64_t valve_started_ticks;
-std::uint64_t valve_phase_deadline_ticks;
 std::uint64_t valve_stop_ticks;
 std::uint64_t last_valve_stop_ticks;
 
@@ -198,6 +197,13 @@ void set_valve_duty(std::uint16_t duty_per_mille) {
 }
 
 void valve_idle() { set_valve_duty(0); }
+
+/*
+ * Non-latching valve: DRV8837 IN2 is hard-wired to GND, so CH1 is simply
+ * OFF or fully ON. Keep full drive applied for the complete requested open
+ * interval; removing drive lets the normally-closed valve spring shut.
+ */
+void valve_on() { set_valve_duty(1000); }
 
 void set_rgb_channel(std::uint32_t channel, std::uint8_t value) {
   const std::uint32_t compare =
@@ -685,7 +691,6 @@ void finish_valve_cycle(std::uint64_t now_ticks) {
   valve_idle();
   const bool was_active = valve_phase != ValvePhase::idle;
   valve_phase = ValvePhase::idle;
-  valve_phase_deadline_ticks = 0;
   valve_stop_ticks = 0;
   last_valve_stop_ticks = now_ticks;
   if (was_active) {
@@ -706,7 +711,6 @@ void initialize() {
   valve_config = ValveConfiguration{};
   valve_phase = ValvePhase::idle;
   valve_started_ticks = 0;
-  valve_phase_deadline_ticks = 0;
   valve_stop_ticks = 0;
   last_valve_stop_ticks = 0;
   /* Preserve the existing prototype convenience defaults when supplied by
@@ -774,26 +778,8 @@ void service(std::uint64_t now_ticks) {
   if (audio_active && audio_fault) {
     finish_audio(now_ticks);
   }
-  if (valve_phase != ValvePhase::idle &&
-      now_ticks >= valve_phase_deadline_ticks) {
-    switch (valve_phase) {
-    case ValvePhase::spike:
-      if (now_ticks >= valve_stop_ticks) {
-        finish_valve_cycle(now_ticks);
-      } else {
-        set_valve_duty(valve_config.hold_duty_per_mille);
-        valve_phase = ValvePhase::hold;
-        valve_phase_deadline_ticks = valve_stop_ticks;
-      }
-      break;
-
-    case ValvePhase::hold:
-      finish_valve_cycle(now_ticks);
-      break;
-
-    case ValvePhase::idle:
-      break;
-    }
+  if (valve_phase == ValvePhase::active && now_ticks >= valve_stop_ticks) {
+    finish_valve_cycle(now_ticks);
   }
 }
 
@@ -913,6 +899,11 @@ configure_valve(const ValveConfiguration &configuration) {
   }
 
   valve_config = configuration;
+  /*
+   * spike/hold fields remain accepted for protocol compatibility, but this
+   * non-latching hardware variant intentionally drives IN1 at 100% for the
+   * whole requested duration.
+   */
   valve_config.valid = true;
   return fairy::protocol::Status::ok;
 }
@@ -937,11 +928,11 @@ fairy::protocol::Status actuate_valve(std::uint32_t duration_ms,
 
   valve_started_ticks = now_ticks;
   valve_stop_ticks = now_ticks + duration_us * ticks_per_us;
-  const std::uint32_t spike_us = static_cast<std::uint32_t>(
-      std::min<std::uint64_t>(duration_us, valve_config.spike_duration_us));
-  valve_phase_deadline_ticks = now_ticks + ticks_from_us(spike_us);
-  valve_phase = ValvePhase::spike;
-  set_valve_duty(valve_config.spike_duty_per_mille);
+  valve_phase = ValvePhase::active;
+
+  // IN2 is grounded in hardware. Drive IN1 continuously high for the entire
+  // requested interval; do not reduce to a PWM hold duty during bring-up.
+  valve_on();
 
   queue_event(EventKind::valve_started, now_ticks, 1,
               static_cast<std::uint32_t>(duration_us));

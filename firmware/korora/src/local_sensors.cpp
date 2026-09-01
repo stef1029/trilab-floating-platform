@@ -44,6 +44,17 @@ inline constexpr std::uint8_t mag_xout0 = 0x00U;
 
 // nPM1300 uses a 7-bit I2C address and 16-bit register addresses.
 inline constexpr std::uint16_t pmic_address = 0x6BU;
+inline constexpr std::uint16_t pmic_vbus_update_ilim = 0x0200U;
+inline constexpr std::uint16_t pmic_vbus_ilim = 0x0201U;
+inline constexpr std::uint16_t pmic_charge_enable_set = 0x0304U;
+inline constexpr std::uint16_t pmic_charge_enable_clear = 0x0305U;
+inline constexpr std::uint16_t pmic_charge_disable_clear = 0x0307U;
+inline constexpr std::uint16_t pmic_charge_current_msb = 0x0308U;
+inline constexpr std::uint16_t pmic_charge_current_lsb = 0x0309U;
+inline constexpr std::uint16_t configured_charge_current_ma = 200U;
+inline constexpr std::uint16_t pmic_charge_vterm = 0x030CU;
+inline constexpr std::uint16_t pmic_charge_vterm_reduced = 0x030DU;
+inline constexpr std::uint8_t configured_vterm = 11U; // 4.35 V LiHV
 inline constexpr std::uint16_t pmic_vbus_status = 0x0207U;
 inline constexpr std::uint16_t pmic_task_vbat_measure = 0x0500U;
 inline constexpr std::uint16_t pmic_ibat_status = 0x0510U;
@@ -52,8 +63,6 @@ inline constexpr std::uint16_t pmic_gp0_result_lsbs = 0x0515U;
 inline constexpr std::uint16_t pmic_ibat_result_msb = 0x0518U;
 inline constexpr std::uint16_t pmic_gp1_result_lsbs = 0x051AU;
 inline constexpr std::uint16_t pmic_ibat_measure_enable = 0x0524U;
-inline constexpr std::uint16_t pmic_charge_current_msb = 0x0308U;
-inline constexpr std::uint16_t pmic_charge_current_lsb = 0x0309U;
 inline constexpr std::uint16_t pmic_discharge_limit_msb = 0x030AU;
 inline constexpr std::uint16_t pmic_discharge_limit_lsb = 0x030BU;
 inline constexpr std::uint16_t pmic_charge_status = 0x0334U;
@@ -246,6 +255,84 @@ bool probe_imu() {
   return true;
 }
 
+inline constexpr std::uint16_t pmic_usb_c_detect_status = 0x0205U;
+
+bool configure_vbus_current_limit() {
+  std::uint8_t cc{};
+  if (pmic_read(pmic_usb_c_detect_status, cc) != 0) {
+    return false;
+  }
+
+  const std::uint8_t cc1 = cc & 0x03U;
+  const std::uint8_t cc2 = (cc >> 2U) & 0x03U;
+  const std::uint8_t source = cc1 > cc2 ? cc1 : cc2;
+
+  // nPM1300 VBUSINILIM0 encoding.
+  std::uint8_t limit = 1U; // 100 mA fallback
+
+  switch (source) {
+  case 3U: // USB-C source advertises 3 A
+  case 2U: // USB-C source advertises 1.5 A
+    // nPM1300 itself tops out at 1.5 A.
+    limit = 15U;
+    break;
+
+  case 1U:      // Default USB source
+    limit = 5U; // 500 mA
+    break;
+
+  default:
+    limit = 1U; // 100 mA
+    break;
+  }
+
+  return pmic_write(pmic_vbus_ilim, limit) == 0 &&
+         pmic_write(pmic_vbus_update_ilim, 1U) == 0;
+}
+
+bool configure_charger() {
+  // Charger must be disabled before changing ICHG.
+  if (pmic_write(pmic_charge_enable_clear, 1U) != 0) {
+    return false;
+  }
+
+  // ICHG encoding is a 9-bit value in 2 mA steps.
+  const std::uint16_t charge_code = configured_charge_current_ma / 2U;
+
+  const std::uint8_t charge_msb = static_cast<std::uint8_t>(charge_code >> 1U);
+
+  const std::uint8_t charge_lsb =
+      static_cast<std::uint8_t>(charge_code & 0x01U);
+
+  if (pmic_write(pmic_charge_current_msb, charge_msb) != 0 ||
+      pmic_write(pmic_charge_current_lsb, charge_lsb) != 0) {
+    return false;
+  }
+
+  // Normal/cool and warm-region termination voltage.
+  if (pmic_write(pmic_charge_vterm, configured_vterm) != 0 ||
+      pmic_write(pmic_charge_vterm_reduced, configured_vterm) != 0) {
+    return false;
+  }
+
+  // Make sure automatic recharge is enabled.
+  // BCHGDISABLECLR bit 0 = clear DISABLERECHARGE.
+  if (pmic_write(pmic_charge_disable_clear, 0x01U) != 0) {
+    return false;
+  }
+
+  // Enable battery charging.
+  //
+  // Bit 0 = ENABLECHARGING.
+  // We intentionally leave bit 1 clear, so the nPM1300 retains
+  // its conservative cool-temperature current behaviour.
+  if (pmic_write(pmic_charge_enable_set, 0x01U) != 0) {
+    return false;
+  }
+
+  return true;
+}
+
 bool probe_pmic() {
   std::uint8_t status{};
   if (pmic_read(pmic_vbus_status, status) != 0) {
@@ -255,6 +342,16 @@ bool probe_pmic() {
 
   // Enable an IBAT conversion after each requested VBAT conversion.
   if (pmic_write(pmic_ibat_measure_enable, 1U) != 0) {
+    note_i2c_error();
+    return false;
+  }
+
+  if (!configure_vbus_current_limit()) {
+    note_i2c_error();
+    return false;
+  }
+
+  if (!configure_charger()) {
     note_i2c_error();
     return false;
   }
@@ -279,7 +376,7 @@ bool probe_pmic() {
       (static_cast<std::uint16_t>(discharge_msb) << 1U) |
       (discharge_lsb & 0x01U);
   // nPM1300 exposes two supported discharge ranges: 200 mA and 1 A.
-  pmic_discharge_limit_ma = discharge_code == 84U ? 200U
+  pmic_discharge_limit_ma = discharge_code == 84U    ? 200U
                             : discharge_code == 415U ? 1000U
                                                      : 0U;
 
@@ -381,8 +478,7 @@ bool read_pmic_power() {
   }
 
   const std::uint16_t vbat_raw =
-      (static_cast<std::uint16_t>(vbat_msb) << 2U) |
-      (gp0_lsbs & 0x03U);
+      (static_cast<std::uint16_t>(vbat_msb) << 2U) | (gp0_lsbs & 0x03U);
   const std::uint16_t millivolts = static_cast<std::uint16_t>(
       (static_cast<std::uint32_t>(vbat_raw) * 5000U + 512U) / 1024U);
 
@@ -409,15 +505,35 @@ bool read_pmic_power() {
     }
   }
 
+  const bool vbus_present = (vbus_status & 0x01U) != 0U;
+
+  bool was_vbus_present{};
+  k_mutex_lock(&state_mutex, K_FOREVER);
+  was_vbus_present = current_state.vbus_present;
+  k_mutex_unlock(&state_mutex);
+
+  // VBUS has just been connected.
+  //
+  // Allow the nPM1300 CC detector to settle and then switch from
+  // VBUSINILIMSTARTUP to the source-appropriate software limit.
+  if (vbus_present && !was_vbus_present) {
+    k_sleep(K_MSEC(20));
+
+    if (!configure_vbus_current_limit()) {
+      note_i2c_error();
+    }
+  }
+
   k_mutex_lock(&state_mutex, K_FOREVER);
   current_state.battery_millivolts = millivolts;
   current_state.battery_current_ma = current_ma;
   current_state.battery_current_valid = current_valid;
-  current_state.vbus_present = (vbus_status & 0x01U) != 0U;
+  current_state.vbus_present = vbus_present;
   current_state.charger_status = charger_status;
   current_state.charger_error_reason = charger_error_reason;
   current_state.charger_error_sensor = charger_error_sensor;
   k_mutex_unlock(&state_mutex);
+
   return true;
 }
 
@@ -444,8 +560,7 @@ bool probe_magnetometer() {
 
 bool read_imu(RawSample &sample) {
   std::uint8_t raw[12]{};
-  if (burst_read(imu_address, imu_outx_l_g, raw, sizeof(raw)) !=
-      0) {
+  if (burst_read(imu_address, imu_outx_l_g, raw, sizeof(raw)) != 0) {
     note_i2c_error();
     return false;
   }
@@ -572,8 +687,7 @@ void publish_power(std::uint64_t timestamp_ticks) {
     return;
   }
 
-  const bool pmic_present =
-      (status_bits() & status_pmic_present) != 0U;
+  const bool pmic_present = (status_bits() & status_pmic_present) != 0U;
   if (pmic_present) {
     (void)read_pmic_power();
   }
@@ -599,13 +713,11 @@ void publish_power(std::uint64_t timestamp_ticks) {
         state.battery_current_ma);
   }
   if (pmic_present) {
-    fields.string(
-        static_cast<std::uint16_t>(fairy::protocol::Field::detail),
-        charge_status_text(state.charger_status, state.vbus_present));
+    fields.string(static_cast<std::uint16_t>(fairy::protocol::Field::detail),
+                  charge_status_text(state.charger_status, state.vbus_present));
     if (state.charger_error_reason != 0U) {
-      fields.string(
-          static_cast<std::uint16_t>(fairy::protocol::Field::reason),
-          charge_error_text(state.charger_error_reason));
+      fields.string(static_cast<std::uint16_t>(fairy::protocol::Field::reason),
+                    charge_error_text(state.charger_error_reason));
     }
   }
 
@@ -793,14 +905,12 @@ void set_session(std::uint32_t new_session) {
 }
 
 bool set_status_led(std::uint8_t led_index, bool enabled) {
-  if (led_index > 2U ||
-      (status_bits() & status_pmic_present) == 0U) {
+  if (led_index > 2U || (status_bits() & status_pmic_present) == 0U) {
     return false;
   }
 
   const std::uint16_t reg =
-      (enabled ? pmic_led_set_base : pmic_led_clear_base) +
-      2U * led_index;
+      (enabled ? pmic_led_set_base : pmic_led_clear_base) + 2U * led_index;
   if (pmic_write(reg, 1U) != 0) {
     note_i2c_error();
     return false;
