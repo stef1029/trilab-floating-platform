@@ -24,7 +24,9 @@ namespace {
 /* Keep five or fewer pulses queued at 10 Hz (Galapagos holds nine total). */
 inline constexpr std::uint64_t scheduling_lead_ticks = 6'400'000ULL;
 inline constexpr std::uint64_t minimum_delivery_lead_ticks = 1'600'000ULL;
-inline constexpr std::uint32_t default_test_interval_ms = 1000;
+inline constexpr std::uint32_t default_test_interval_ms = 5000;
+inline constexpr std::uint8_t sync_test_valve_address = 0x14U;
+inline constexpr std::uint32_t sync_test_valve_duration_ms = 150U;
 
 struct PendingPulse {
   bool used{};
@@ -302,40 +304,28 @@ bool send_ttl_command(std::uint32_t sequence, std::uint64_t target_ticks,
   return false;
 }
 
-void random_fairy_command() {
-  const std::size_t board_count = korora_fairies::count();
-  for (std::size_t index = 0; index < board_count; ++index) {
-    korora_fairies::NodeSnapshot node;
-    if (!korora_fairies::snapshot(index, node) || node.logical_slot == 0xFFU) {
-      continue;
-    }
-    std::uint8_t field_buffer[32]{};
-    fairy::protocol::TlvWriter fields(field_buffer, sizeof(field_buffer));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::red),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::green),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::blue),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u32(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::duration_ms),
-        500);
-    fairy::protocol::MessageHeader header;
-    header.opcode = fairy::protocol::Opcode::set_rgb;
-    header.flags = fairy::protocol::require_response |
-                   fairy::protocol::execute_immediately;
-    header.command_id =
-        static_cast<std::uint32_t>(atomic_inc(&sequence_counter) + 1);
-    header.session_id = static_cast<std::uint32_t>(atomic_get(&session));
-    std::uint8_t message[fairy::protocol::adelie_max_message_size]{};
-    const std::size_t length = fairy::protocol::encode_adelie(
-        header, field_buffer, fields.size(), message, sizeof(message));
-    if (length != 0U) {
-      (void)korora_fairies::queue_command(node.address, message, length, 0);
-    }
+void send_sync_test_valve_command() {
+  std::uint8_t field_buffer[16]{};
+  fairy::protocol::TlvWriter fields(field_buffer, sizeof(field_buffer));
+  (void)fields.u32(
+      static_cast<std::uint16_t>(fairy::protocol::CommandField::duration_ms),
+      sync_test_valve_duration_ms);
+
+  fairy::protocol::MessageHeader header;
+  header.opcode = fairy::protocol::Opcode::actuate_valve;
+  header.flags = fairy::protocol::require_response |
+                 fairy::protocol::execute_immediately |
+                 fairy::protocol::safety_authorized;
+  header.command_id =
+      static_cast<std::uint32_t>(atomic_inc(&sequence_counter) + 1);
+  header.session_id = static_cast<std::uint32_t>(atomic_get(&session));
+
+  std::uint8_t message[fairy::protocol::adelie_max_message_size]{};
+  const std::size_t length = fairy::protocol::encode_adelie(
+      header, field_buffer, fields.size(), message, sizeof(message));
+  if (length != 0U) {
+    (void)korora_fairies::queue_command(sync_test_valve_address, message,
+                                        length, 0);
   }
 }
 
@@ -408,7 +398,7 @@ void worker(void *, void *, void *) {
 
     if (atomic_get(&test_enabled) != 0 &&
         k_uptime_get() >= next_test_command_ms) {
-      random_fairy_command();
+      send_sync_test_valve_command();
       next_test_command_ms =
           k_uptime_get() + static_cast<std::int64_t>(test_command_interval_ms);
     }

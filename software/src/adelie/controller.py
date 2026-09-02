@@ -285,7 +285,7 @@ class AdelieController:
             fields=[
                 (CommandField.TTL_FREQUENCY_MILLIHZ, ValueType.U32, 1000),
                 (CommandField.TTL_WIDTH_US, ValueType.U32, 100),
-                (CommandField.TEST_COMMAND_INTERVAL_MS, ValueType.U32, 1000),
+                (CommandField.TEST_COMMAND_INTERVAL_MS, ValueType.U32, 5000),
             ],
         )
 

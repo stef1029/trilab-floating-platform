@@ -342,7 +342,7 @@ void handle_local(const fairy::protocol::AdelieMessageView &command,
     break;
 
   case fairy::protocol::Opcode::start_sync_test: {
-    std::uint32_t interval = 1000;
+    std::uint32_t interval = 5000;
     std::uint32_t width = 100;
     (void)command_u32(command,
                       fairy::protocol::CommandField::test_command_interval_ms,
