@@ -15,7 +15,7 @@ Korora runs on the nRF52840 DK with Zephyr. It is the system time authority, BLE
 - Route every record through the Fairy protocol
 - Serialize all RS485 and BLE writes
 - Prioritize Galapagos timing commands and Adelie responses over telemetry
-- Schedule TTL trains and capture the prototype loopback
+- Schedule TTL trains on Galapagos without a Korora loopback capture
 - Stop the active session when Adelie disconnects
 
 ## Files
@@ -23,13 +23,13 @@ Korora runs on the nRF52840 DK with Zephyr. It is the system time authority, BLE
 | File                    | Purpose                                               |
 | ----------------------- | ----------------------------------------------------- |
 | `main.cpp`              | Startup only                                          |
-| `timebase.cpp`          | TIMER2 SYNC and event capture, TIMER3 TTL capture     |
+| `timebase.cpp`          | TIMER2 SYNC generation and 16 MHz Korora timebase      |
 | `controller_clock.cpp`  | BLE controller clock bridge                           |
 | `rs485_bus.cpp`         | COBS, polling, retries, and bus mutex                 |
 | `fairy_manager.cpp`     | Discovery, inventory, polling, and Fairy clock models |
 | `ble_gateway.cpp`       | Adelie server and Galapagos client                    |
 | `galapagos_manager.cpp` | BLE anchor pairing and record conversion              |
-| `experiment.cpp`        | Session records, TTL train, loopback, and sync test   |
+| `experiment.cpp`        | Session records, Galapagos TTL train, and sync test    |
 | `control.cpp`           | Adelie command routing and local operations           |
 | `debug_log.cpp`         | Isolated human serial text                            |
 
@@ -40,10 +40,10 @@ The overlay is `boards/nrf52840dk_nrf52840.overlay`.
 | Function                     | Pin   |
 | ---------------------------- | ----- |
 | SYNC output                  | P1.10 |
-| General event input          | P1.11 |
-| Galapagos TTL loopback input | P0.02 |
 | RS485 UART TX                | P0.27 |
 | RS485 UART RX                | P0.26 |
+
+Korora does not configure an external-event input or a Galapagos TTL loopback input. Galapagos TTLs are scheduled over BLE and their generated records are returned over the protocol.
 
 The prototype RS485 modules provide automatic direction control. No direction GPIO is used.
 

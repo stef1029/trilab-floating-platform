@@ -5,8 +5,6 @@
 / {
     zephyr,user {
         sync-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
-        event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-        ttl-input-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
     };
 };
 
@@ -82,7 +80,7 @@
 };
 
 &timer3 {
-    status = "okay";
+    status = "disabled";
 };
 
 &rtc2 {

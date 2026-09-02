@@ -23,9 +23,6 @@
         /* nPM1300 interrupt */
         pmic-int-gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>;
 
-        /* dummy pins */
-        event-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-        ttl-input-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
     };
 
     /**
@@ -158,7 +155,7 @@
     status = "okay";
 };
 &timer3 {
-    status = "okay";
+    status = "disabled";
 };
 &rtc2 {
     status = "okay";
