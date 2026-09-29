@@ -150,7 +150,9 @@ BUTTON1 on the DK --  BLE notification  -->  counter in the GUI
 ```sh
 ./blink ble build
 ./blink ble flash
-cd ble-host && ../../software/.venv/Scripts/python.exe led_button.py
+cd ble-host
+run                     # Windows cmd
+./run.sh                # git bash / PowerShell
 ```
 
 Click **Connect**, then the LED button.
