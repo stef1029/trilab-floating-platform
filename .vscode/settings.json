@@ -4,5 +4,14 @@
 		"${workspaceFolder}/firmware/galapagos",
 		"${workspaceFolder}/sandbox/blink-nordic",
 		"${workspaceFolder}/sandbox/ble-led"
+	],
+
+	// clangd finds each project's compile_commands.json on its own and picks
+	// the right one PER FILE, so there is no configuration to switch between.
+	// The Microsoft C/C++ extension's parser must be off or the two fight.
+	"C_Cpp.intelliSenseEngine": "disabled",
+	"clangd.arguments": [
+		"--background-index",
+		"--header-insertion=never"
 	]
 }
