@@ -2,6 +2,7 @@
 	"nrf-connect.applications": [
 		"${workspaceFolder}/firmware/korora",
 		"${workspaceFolder}/firmware/galapagos",
-		"${workspaceFolder}/sandbox/blink-nordic"
+		"${workspaceFolder}/sandbox/blink-nordic",
+		"${workspaceFolder}/sandbox/ble-led"
 	]
 }
