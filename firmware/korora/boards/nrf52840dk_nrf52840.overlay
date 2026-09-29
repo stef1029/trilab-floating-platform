@@ -5,6 +5,14 @@
 / {
     zephyr,user {
         sync-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+
+        /*
+         * The Grove RS-485 breakout used on the breadboard rig switches
+         * direction automatically, so no DE line is wired. src/rs485_bus.cpp
+         * requires this property unconditionally, so point it at a free,
+         * unconnected DK pin. P1.12 is used by nothing else on this board.
+         */
+        rs485-dir-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
     };
 };
 
