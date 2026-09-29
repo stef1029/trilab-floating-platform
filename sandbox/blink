@@ -7,6 +7,8 @@
 #   ./blink stm32 flash       ...and flash it
 #   ./blink stm32 monitor     open the serial console
 #   ./blink stm32 index       regenerate compile_commands.json for the editor
+#   ./blink ble               build the BLE peripheral for the nRF52840 DK
+#   ./blink ble flash         ...and flash it
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -18,12 +20,13 @@ target=${1:-}
 action=${2:-build}
 
 case "$target" in
-nordic)
+nordic|ble)
+    [ "$target" = "ble" ] && app=ble-led || app=blink-nordic
     ZEPHYR_BASE="C:/ncs/${NCS_VERSION}/zephyr"; export ZEPHYR_BASE
     cd "$here"
     case "$action" in
-    build) cmd="west build -p always -b nrf52840dk/nrf52840 blink-nordic --build-dir blink-nordic/build" ;;
-    flash) cmd="west flash --build-dir blink-nordic/build" ;;
+    build) cmd="west build -p always -b nrf52840dk/nrf52840 $app --build-dir $app/build-dk" ;;
+    flash) cmd="west flash --build-dir $app/build-dk --dev-id 1050230658" ;;
     *) echo "unknown action: $action" >&2; exit 2 ;;
     esac
     exec "$NRFUTIL" sdk-manager toolchain launch --ncs-version "$NCS_VERSION" -- $cmd
@@ -38,7 +41,7 @@ stm32)
     esac
     ;;
 *)
-    echo "usage: $0 {nordic|stm32} [build|flash|monitor]" >&2
+    echo "usage: $0 {nordic|ble|stm32} [build|flash|monitor|index]" >&2
     exit 2
     ;;
 esac

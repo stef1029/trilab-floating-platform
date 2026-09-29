@@ -1,5 +1,5 @@
 # Zephyr / west
-build/
+build*/
 # PlatformIO
 .pio/
 # build artefacts

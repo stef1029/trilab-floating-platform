@@ -136,3 +136,38 @@ include paths.
 6. **Clock model** — SYNC capture, pairing, the affine fit
 7. **BLE** — advertise, connect, the Adelie service
 8. **Second BLE link** — Galapagos, anchor points, TTL
+
+## ble-led — a stripped-down Adelie/Korora link
+
+The smallest thing that is still recognisably the real system: a GUI button
+turns an LED on, and the board's button reports back.
+
+```
+GUI toggle        --  BLE write         -->  LED1 on the DK
+BUTTON1 on the DK --  BLE notification  -->  counter in the GUI
+```
+
+```sh
+./blink ble build
+./blink ble flash
+cd ble-host && ../../software/.venv/Scripts/python.exe led_button.py
+```
+
+Click **Connect**, then the LED button.
+
+### What it leaves out
+
+Everything above the transport. Here the characteristic value *is* the whole
+message; real Korora wraps both directions in Transport v1 — 12-byte header,
+CRC16, fragmentation, channel byte — then Adelie v2 or Fairy v3 on top.
+
+### The pieces that do match
+
+| | `ble-led` | Korora |
+| --- | --- | --- |
+| Role | peripheral | peripheral (to Adelie) + central (to Galapagos) |
+| Service | one custom 128-bit UUID | `a88279d0-…` |
+| Host → board | write characteristic | RX characteristic `…d1` |
+| Board → host | notify characteristic | TX characteristic `…d2` |
+| On disconnect | LED forced off | outputs safe, session ends |
+| MTU | 247 requested | 247 requested |
