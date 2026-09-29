@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+# Build (and optionally flash) a sandbox project.
+#
+#   ./blink nordic            build blink-nordic for the nRF52840 DK
+#   ./blink nordic flash      ...and flash it
+#   ./blink stm32             build blink-stm32 for the NUCLEO-G071RB
+#   ./blink stm32 flash       ...and flash it
+#   ./blink stm32 monitor     open the serial console
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NCS_VERSION=${NCS_VERSION:-v3.4.1}
+NRFUTIL=${NRFUTIL:-/c/ncs/tools/nrfutil.exe}
+PIO=${PIO:-$HOME/.platformio/penv/Scripts/pio.exe}
+
+target=${1:-}
+action=${2:-build}
+
+case "$target" in
+nordic)
+    ZEPHYR_BASE="C:/ncs/${NCS_VERSION}/zephyr"; export ZEPHYR_BASE
+    cd "$here"
+    case "$action" in
+    build) cmd="west build -p always -b nrf52840dk/nrf52840 blink-nordic --build-dir blink-nordic/build" ;;
+    flash) cmd="west flash --build-dir blink-nordic/build" ;;
+    *) echo "unknown action: $action" >&2; exit 2 ;;
+    esac
+    exec "$NRFUTIL" sdk-manager toolchain launch --ncs-version "$NCS_VERSION" -- $cmd
+    ;;
+stm32)
+    case "$action" in
+    build)   exec "$PIO" run -d "$here/blink-stm32" ;;
+    flash)   exec "$PIO" run -d "$here/blink-stm32" -t upload ;;
+    monitor) exec "$PIO" device monitor -b 115200 ;;
+    *) echo "unknown action: $action" >&2; exit 2 ;;
+    esac
+    ;;
+*)
+    echo "usage: $0 {nordic|stm32} [build|flash|monitor]" >&2
+    exit 2
+    ;;
+esac
