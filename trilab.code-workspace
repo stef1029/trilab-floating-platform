@@ -1,0 +1,31 @@
+{
+    "folders": [
+        {
+            "name": "repo",
+            "path": "."
+        },
+        {
+            "name": "sandbox-stm32 (PlatformIO)",
+            "path": "sandbox/blink-stm32"
+        },
+        {
+            "name": "firmware-fairy (PlatformIO)",
+            "path": "firmware/fairy"
+        }
+    ],
+    "settings": {
+        "nrf-connect.applications": [
+            "${workspaceFolder:repo}/firmware/korora",
+            "${workspaceFolder:repo}/firmware/galapagos",
+            "${workspaceFolder:repo}/sandbox/blink-nordic"
+        ],
+        "platformio-ide.activateOnlyOnPlatformIOProject": true
+    },
+    "extensions": {
+        "recommendations": [
+            "platformio.platformio-ide",
+            "nordic-semiconductor.nrf-connect",
+            "ms-vscode.cpptools"
+        ]
+    }
+}
