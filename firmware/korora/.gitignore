@@ -1,5 +1,5 @@
 # Zephyr and west build output
-build/
+build*/
 zephyr/
 twister-out/
 *.hex
