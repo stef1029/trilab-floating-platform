@@ -103,6 +103,29 @@ grep GPIO blink-nordic/build/blink-nordic/zephyr/.config
     west build --build-dir blink-nordic/build -t menuconfig
 ```
 
+## Editor IntelliSense (`cannot open source file "stm32g0xx_hal.h"`)
+
+That error is VS Code, not the compiler - the build is fine. The C/C++
+extension needs a **compilation database** telling it where the headers are.
+
+```sh
+./blink stm32 index      # regenerates blink-stm32/compile_commands.json
+./blink nordic build     # Zephyr generates one automatically
+```
+
+`.vscode/c_cpp_properties.json` already points at both. Pick which one is
+active with **Ctrl+Shift+P -> C/C++: Select a Configuration**:
+
+| Configuration | For files in |
+| --- | --- |
+| `sandbox-stm32` | `sandbox/blink-stm32/` |
+| `sandbox-nordic` | `sandbox/blink-nordic/` |
+| `firmware-fairy` | `firmware/fairy/` (run `pio run -d firmware/fairy -t compiledb` first) |
+
+If errors persist after switching: **Ctrl+Shift+P -> C/C++: Reset IntelliSense
+Database**. Regenerate the index whenever you add a source file or change
+include paths.
+
 ## Planned build-up
 
 1. **Blink** — toolchain works, board flashes, console prints. ← you are here

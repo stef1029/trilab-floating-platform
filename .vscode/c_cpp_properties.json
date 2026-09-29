@@ -1,0 +1,26 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "sandbox-stm32",
+            "compileCommands": "${workspaceFolder}/sandbox/blink-stm32/compile_commands.json",
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        },
+        {
+            "name": "sandbox-nordic",
+            "compileCommands": "${workspaceFolder}/sandbox/blink-nordic/build/blink-nordic/compile_commands.json",
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        },
+        {
+            "name": "firmware-fairy",
+            "compileCommands": "${workspaceFolder}/firmware/fairy/compile_commands.json",
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ]
+}

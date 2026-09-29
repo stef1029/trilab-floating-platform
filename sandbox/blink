@@ -6,6 +6,7 @@
 #   ./blink stm32             build blink-stm32 for the NUCLEO-G071RB
 #   ./blink stm32 flash       ...and flash it
 #   ./blink stm32 monitor     open the serial console
+#   ./blink stm32 index       regenerate compile_commands.json for the editor
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -30,6 +31,7 @@ nordic)
 stm32)
     case "$action" in
     build)   exec "$PIO" run -d "$here/blink-stm32" ;;
+    index)   exec "$PIO" run -d "$here/blink-stm32" -t compiledb ;;
     flash)   exec "$PIO" run -d "$here/blink-stm32" -t upload ;;
     monitor) exec "$PIO" device monitor -b 115200 ;;
     *) echo "unknown action: $action" >&2; exit 2 ;;

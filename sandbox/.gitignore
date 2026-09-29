@@ -7,3 +7,7 @@ build/
 *.bin
 *.hex
 *.map
+
+# editor / IntelliSense
+compile_commands.json
+.cache/
