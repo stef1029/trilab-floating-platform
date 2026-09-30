@@ -3,7 +3,8 @@
 		"${workspaceFolder}/firmware/korora",
 		"${workspaceFolder}/firmware/galapagos",
 		"${workspaceFolder}/sandbox/blink-nordic",
-		"${workspaceFolder}/sandbox/ble-led"
+		"${workspaceFolder}/sandbox/ble-led",
+		"${workspaceFolder}/sandbox/bridge"
 	],
 
 	// clangd finds each project's compile_commands.json on its own and picks

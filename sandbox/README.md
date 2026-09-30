@@ -206,3 +206,44 @@ CompileFlags:
 Point that at a different build directory to index a different board —
 `firmware/korora/.clangd` currently indexes the DK build rather than the
 BMD-340 one.
+
+## bridge + fairy-lite — the real protocol, end to end
+
+```
+PC  ──BLE──>  nRF52840 DK  ──UART 460800──>  Nucleo G071RB  ──>  LED
+ adelie.transport        fairy::transport         fairy::transport
+```
+
+All three ends use **genuine Transport v1** — 12-byte header, CRC16-CCITT,
+COBS framing on the UART, real addresses from `system_config.hpp`. The C++
+side links `firmware/shared` directly; the Python side imports
+`adelie.transport`. Verified by round-trip: a frame built in Python decodes
+with the C++ library.
+
+### Wiring (3.3 V logic, no RS485 transceivers yet)
+
+| nRF52840 DK | | Nucleo G071RB |
+| --- | --- | --- |
+| P0.27 (UART1 TX) | → | PC5 / D0 (USART1 RX) |
+| P0.26 (UART1 RX) | ← | PC4 / D1 (USART1 TX) |
+| GND | ↔ | GND |
+
+### Run
+
+```sh
+./blink bridge build && ./blink bridge flash      # nRF52840 DK
+./blink fairy  build && ./blink fairy  flash      # Nucleo
+
+cd ble-host
+run_fairy            # Windows cmd
+./run_fairy.sh       # git bash
+```
+
+Consoles: bridge on the DK's VCOM0 (115200), fairy-lite on the ST-Link VCOM
+(115200). Both print each frame as it passes.
+
+### The payload
+
+Transport v1 carries two bytes: `[opcode, value]`, with `0x02 0x01` meaning
+"LED on". The real system puts **Adelie v2 TLV** here instead — that is the
+next layer to add, and nothing below it changes.

@@ -1,0 +1,29 @@
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
+
+/*
+ * Link to the Fairy. Same pins the real Korora prototype uses:
+ *   P0.27 -> TX   (to Nucleo PC5 / D0)
+ *   P0.26 <- RX   (from Nucleo PC4 / D1)
+ */
+&pinctrl {
+    bridge_uart1_default: bridge_uart1_default {
+        group1 { psels = <NRF_PSEL(UART_TX, 0, 27)>; };
+        group2 { psels = <NRF_PSEL(UART_RX, 0, 26)>; bias-pull-up; };
+    };
+    bridge_uart1_sleep: bridge_uart1_sleep {
+        group1 { psels = <NRF_PSEL(UART_TX, 0, 27)>,
+                         <NRF_PSEL(UART_RX, 0, 26)>;
+                 low-power-enable; };
+    };
+};
+
+&uart1 {
+    status = "okay";
+    current-speed = <460800>;
+    pinctrl-0 = <&bridge_uart1_default>;
+    pinctrl-1 = <&bridge_uart1_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+/* i2c0 shares pins with uart1's defaults on this DK. */
+&i2c0 { status = "disabled"; };
