@@ -11,8 +11,12 @@
 	// The Microsoft C/C++ extension's parser must be off or the two fight.
 	"C_Cpp.intelliSenseEngine": "disabled",
 	"clangd.path": "C:/Users/Stefan Rogers/AppData/Local/clangd/clangd_18.1.3/bin/clangd.exe",
+	// Inlay hints collapse into noise inside macro expansions such as
+	// BT_UUID_INIT_128. Hold Ctrl+Alt to show them when they are useful.
+	"editor.inlayHints.enabled": "offUnlessPressed",
 	"clangd.arguments": [
 		"--background-index",
 		"--header-insertion=never"
-	]
+	],
+	"cmake.ignoreCMakeListsMissing": true
 }
