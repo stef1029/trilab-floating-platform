@@ -14,3 +14,8 @@ CompileFlags:
     - -mfp16-format=*
     - -mtp=*
     - --param=*
+  # Zephyr's GATT macros leave the stack-owned _auto_assigned_handle bitfield
+  # uninitialised on purpose. GCC exempts designated initialisers from
+  # -Wmissing-field-initializers; clang does not, so silence it here only.
+  Add:
+    - -Wno-missing-field-initializers
