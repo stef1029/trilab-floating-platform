@@ -1,0 +1,51 @@
+#!/usr/bin/env sh
+# Build / flash / monitor a sandbox project.
+#
+#   ./sb <target> [build|flash|monitor|index]      default action: build
+#
+#   01-blink     nordic      nRF52840 DK     LED blink
+#                stm32       NUCLEO-G071RB   LED blink
+#   02-ble       ble         nRF52840 DK     BLE peripheral, LED + button
+#   03-protocol  bridge      nRF52840 DK     BLE <-> UART, Transport v1
+#                fairy       NUCLEO-G071RB   the far end of that link
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NCS_VERSION=${NCS_VERSION:-v3.4.1}
+NRFUTIL=${NRFUTIL:-/c/ncs/tools/nrfutil.exe}
+PIO=${PIO:-$HOME/.platformio/penv/Scripts/pio.exe}
+DK_SERIAL=${DK_SERIAL:-1050230658}
+
+target=${1:-}
+action=${2:-build}
+
+case "$target" in
+  nordic) kind=zephyr; app=01-blink/nordic ;;
+  ble)    kind=zephyr; app=02-ble/peripheral ;;
+  bridge) kind=zephyr; app=03-protocol/bridge ;;
+  stm32)  kind=pio;    app=01-blink/stm32 ;;
+  fairy)  kind=pio;    app=03-protocol/fairy ;;
+  *)
+    echo "usage: $0 {nordic|stm32|ble|bridge|fairy} [build|flash|monitor|index]" >&2
+    exit 2 ;;
+esac
+
+if [ "$kind" = "zephyr" ]; then
+  ZEPHYR_BASE="C:/ncs/${NCS_VERSION}/zephyr"; export ZEPHYR_BASE
+  cd "$here"
+  board=nrf52840dk/nrf52840
+  case "$action" in
+    build) cmd="west build -p always -b $board $app --build-dir $app/build-dk" ;;
+    flash) cmd="west flash --build-dir $app/build-dk --dev-id $DK_SERIAL" ;;
+    *) echo "unknown action for a Zephyr target: $action" >&2; exit 2 ;;
+  esac
+  exec "$NRFUTIL" sdk-manager toolchain launch --ncs-version "$NCS_VERSION" -- $cmd
+else
+  case "$action" in
+    build)   exec "$PIO" run -d "$here/$app" ;;
+    flash)   exec "$PIO" run -d "$here/$app" -t upload ;;
+    monitor) exec "$PIO" device monitor -b 115200 ;;
+    index)   exec "$PIO" run -d "$here/$app" -t compiledb ;;
+    *) echo "unknown action: $action" >&2; exit 2 ;;
+  esac
+fi

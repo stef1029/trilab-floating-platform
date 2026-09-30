@@ -2,9 +2,9 @@
 	"nrf-connect.applications": [
 		"${workspaceFolder}/firmware/korora",
 		"${workspaceFolder}/firmware/galapagos",
-		"${workspaceFolder}/sandbox/blink-nordic",
-		"${workspaceFolder}/sandbox/ble-led",
-		"${workspaceFolder}/sandbox/bridge"
+		"${workspaceFolder}/sandbox/01-blink/nordic",
+		"${workspaceFolder}/sandbox/02-ble/peripheral",
+		"${workspaceFolder}/sandbox/03-protocol/bridge"
 	],
 
 	// clangd finds each project's compile_commands.json on its own and picks

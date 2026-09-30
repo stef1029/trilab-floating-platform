@@ -4,7 +4,7 @@
 #
 # To index a different board, point this at that build directory instead.
 CompileFlags:
-  CompilationDatabase: build-dk/blink-nordic
+  CompilationDatabase: build-dk/nordic
 
   # The database records GCC invocations. These flags have no clang
   # equivalent and would otherwise show up as errors in the editor.
