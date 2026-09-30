@@ -50,10 +50,26 @@ class BleWorker(QtCore.QObject):
 
     # ---------------------------------------------------------- public API
     def connect(self) -> None:
-        asyncio.run_coroutine_threadsafe(self._connect(), self._loop)
+        self._submit(self._connect())
 
     def set_led(self, on: bool) -> None:
-        asyncio.run_coroutine_threadsafe(self._set_led(on), self._loop)
+        self._submit(self._set_led(on))
+
+    def _submit(self, coro) -> None:
+        """Run a coroutine on the BLE loop and surface any exception.
+
+        run_coroutine_threadsafe stores exceptions in the Future it returns.
+        Discarding that Future means a failed write -- the board rejecting
+        it, or the link dropping -- would vanish silently.
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+        def report(fut) -> None:
+            error = fut.exception()
+            if error is not None:
+                self.state_changed.emit(f"{type(error).__name__}: {error}")
+
+        future.add_done_callback(report)
 
     # ------------------------------------------------------------ coroutines
     async def _connect(self) -> None:
@@ -79,9 +95,11 @@ class BleWorker(QtCore.QObject):
         if self._client is None or not self._client.is_connected:
             self.state_changed.emit("not connected")
             return
-        # response=True asks the peripheral to acknowledge the write.
+        # response=True is an ATT Write Request: the peripheral acknowledges,
+        # and a rejection from led_write() arrives here as an exception.
         await self._client.write_gatt_char(LED_UUID, bytes([1 if on else 0]),
                                            response=True)
+        self.state_changed.emit(f"LED -> {1 if on else 0}")
 
     def _on_disconnected(self, _client: BleakClient) -> None:
         self._client = None
