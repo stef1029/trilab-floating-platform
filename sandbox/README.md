@@ -184,7 +184,7 @@ with no configuration to switch.
 **One-time setup:** install the **clangd** extension
 (`llvm-vs-code-extensions.vscode-clangd`) and reload. The clangd binary
 itself is already installed at
-`%LOCALAPPDATA%\clangd\clangd_18.1.3in\clangd.exe` and named in
+`%LOCALAPPDATA%/clangd/clangd_18.1.3/bin/clangd.exe` and named in
 `.vscode/settings.json`, which also disables the competing parser.
 
 **Then the only rule is: build a project before editing it.** The database is
