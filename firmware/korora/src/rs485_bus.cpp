@@ -4,6 +4,9 @@
 #include <cerrno>
 #include <cstring>
 
+#include <gpiote_nrfx.h>
+#include <hal/nrf_gpio.h>
+
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
@@ -17,7 +20,9 @@
 namespace korora_rs485 {
 namespace {
 
+#define USER_NODE DT_PATH(zephyr_user)
 #define UART_NODE DT_NODELABEL(uart1)
+#define RS485_DIR_PIN NRF_DT_GPIOS_TO_PSEL(USER_NODE, rs485_dir_gpios)
 
 const device *uart = DEVICE_DT_GET(UART_NODE);
 K_MUTEX_DEFINE(bus_mutex);
@@ -141,6 +146,10 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
 
   case UART_RX_STOPPED:
     note_receive_fault();
+
+    korora_debug::log("RS485_RX_STOPPED reason=0x%08x\r\n",
+                      static_cast<unsigned>(event->data.rx_stop.reason));
+
     break;
 
   case UART_RX_DISABLED:
@@ -150,11 +159,16 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
     break;
 
   case UART_TX_DONE:
+    // The final stop bit has left UARTE. Release the half-duplex bus
+    // immediately so a Fairy can start its response without waiting for
+    // the RS485 manager thread to be scheduled.
+    nrf_gpio_pin_clear(RS485_DIR_PIN);
     atomic_set(&transmit_result, 0);
     k_sem_give(&transmit_complete);
     break;
 
   case UART_TX_ABORTED:
+    nrf_gpio_pin_clear(RS485_DIR_PIN);
     atomic_set(&transmit_result, -EIO);
     k_sem_give(&transmit_complete);
     break;
@@ -180,13 +194,21 @@ bool receive_byte_until(std::int64_t deadline, std::uint8_t &byte) {
 bool transmit_encoded(const std::uint8_t *bytes, std::size_t length) {
   k_sem_reset(&transmit_complete);
   atomic_set(&transmit_result, -EINPROGRESS);
+
+  // U3 has /RE and DE tied together on RS485_DIR:
+  //   LOW  -> transmitter disabled, receiver enabled
+  //   HIGH -> transmitter enabled, receiver disabled
+  nrf_gpio_pin_set(RS485_DIR_PIN);
+
   const int error = uart_tx(uart, bytes, length, SYS_FOREVER_US);
   if (error != 0) {
+    nrf_gpio_pin_clear(RS485_DIR_PIN);
     return false;
   }
   if (k_sem_take(&transmit_complete, K_MSEC(20)) != 0) {
     (void)uart_tx_abort(uart);
     (void)k_sem_take(&transmit_complete, K_MSEC(20));
+    nrf_gpio_pin_clear(RS485_DIR_PIN);
     return false;
   }
   return atomic_get(&transmit_result) == 0;
@@ -312,6 +334,11 @@ int initialize() {
   if (!device_is_ready(uart)) {
     return -ENODEV;
   }
+
+  // Default to listening. The pin is asserted only while UARTE is sending.
+  nrf_gpio_cfg_output(RS485_DIR_PIN);
+  nrf_gpio_pin_clear(RS485_DIR_PIN);
+
   atomic_clear(&error_count);
   atomic_clear(&retry_count);
   atomic_clear(&timeout_count);
@@ -425,7 +452,20 @@ std::size_t discover(std::uint32_t nonce, std::uint8_t round,
       break;
     }
     fairy::transport::FrameView frame;
-    if (decoder.push(byte, frame) != fairy::transport::DecodeResult::ok) {
+
+    const auto decoded = decoder.push(byte, frame);
+
+    if (decoded == fairy::transport::DecodeResult::incomplete) {
+      continue;
+    }
+
+    if (decoded != fairy::transport::DecodeResult::ok) {
+      atomic_inc(&error_count);
+      atomic_inc(&decode_error_count);
+
+      korora_debug::log("MAGELLAN_RX decode_error=%u\r\n",
+                        static_cast<unsigned>(decoded));
+
       continue;
     }
     if (frame.header.fragment_count != 1U ||
@@ -451,6 +491,12 @@ std::size_t discover(std::uint32_t nonce, std::uint8_t round,
     }
     if (!duplicate && count < capacity) {
       offers[count++] = DiscoveredOffer{offer, frame.header.transfer_id};
+      korora_debug::log("MAGELLAN_RX frame src=0x%02x dst=0x%02x channel=%u "
+                        "payload=%u transfer=%u\r\n",
+                        frame.header.source, frame.header.destination,
+                        static_cast<unsigned>(frame.header.channel),
+                        static_cast<unsigned>(frame.payload_length),
+                        static_cast<unsigned>(frame.header.transfer_id));
     }
   }
   k_mutex_unlock(&bus_mutex);

@@ -1,7 +1,6 @@
 #include "experiment.hpp"
 
 #include <array>
-#include <cstring>
 
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>
@@ -24,15 +23,15 @@ namespace {
 /* Keep five or fewer pulses queued at 10 Hz (Galapagos holds nine total). */
 inline constexpr std::uint64_t scheduling_lead_ticks = 6'400'000ULL;
 inline constexpr std::uint64_t minimum_delivery_lead_ticks = 1'600'000ULL;
-inline constexpr std::uint32_t default_test_interval_ms = 1000;
+inline constexpr std::uint32_t default_test_interval_ms = 5000;
+inline constexpr std::uint8_t sync_test_valve_address = 0x14U;
+inline constexpr std::uint32_t sync_test_valve_duration_ms = 150U;
 
 struct PendingPulse {
   bool used{};
-  bool confirmed{};
   std::uint32_t sequence{};
   std::uint32_t width_us{};
   std::uint64_t target_ticks{};
-  std::uint64_t generated_ticks{};
 };
 
 std::array<PendingPulse, 16> pending;
@@ -93,63 +92,6 @@ void record_schedule(std::uint32_t sequence, std::uint64_t target_ticks,
           payload, fields.size(), true);
 }
 
-void record_capture(std::uint32_t sequence, std::uint64_t captured_ticks,
-                    std::uint64_t target_ticks, std::uint64_t generated_ticks) {
-  std::uint8_t payload[64]{};
-  fairy::protocol::TlvWriter fields(payload, sizeof(payload));
-  (void)fields.u32(static_cast<std::uint16_t>(fairy::protocol::Field::sequence),
-                   sequence);
-  (void)fields.u64(
-      static_cast<std::uint16_t>(fairy::protocol::Field::requested_ticks),
-      target_ticks);
-  (void)fields.u64(
-      static_cast<std::uint16_t>(fairy::protocol::Field::actual_ticks),
-      captured_ticks);
-  publish(fairy::protocol::RecordType::ttl_captured,
-          fairy::protocol::critical | fairy::protocol::actual_time |
-              fairy::protocol::synchronized,
-          captured_ticks, payload, fields.size(), true);
-
-  if (target_ticks == 0U) {
-    return;
-  }
-  const std::int64_t error_ticks =
-      captured_ticks >= target_ticks
-          ? static_cast<std::int64_t>(captured_ticks - target_ticks)
-          : -static_cast<std::int64_t>(target_ticks - captured_ticks);
-  fairy::protocol::TlvWriter result(payload, sizeof(payload));
-  (void)result.u32(static_cast<std::uint16_t>(fairy::protocol::Field::sequence),
-                   sequence);
-  (void)result.i64(static_cast<std::uint16_t>(fairy::protocol::Field::value),
-                   error_ticks * 125LL / 2LL);
-  (void)result.u64(
-      static_cast<std::uint16_t>(fairy::protocol::Field::requested_ticks),
-      target_ticks);
-  (void)result.u64(
-      static_cast<std::uint16_t>(fairy::protocol::Field::actual_ticks),
-      captured_ticks);
-  if (generated_ticks != 0U) {
-    (void)result.u64(static_cast<std::uint16_t>(fairy::protocol::Field::detail),
-                     generated_ticks);
-  }
-  publish(fairy::protocol::RecordType::ttl_result,
-          fairy::protocol::critical | fairy::protocol::actual_time |
-              fairy::protocol::synchronized,
-          captured_ticks, payload, result.size(), true);
-}
-
-void record_external(const korora_time::Capture &capture) {
-  std::uint8_t payload[24]{};
-  fairy::protocol::TlvWriter fields(payload, sizeof(payload));
-  (void)fields.u32(static_cast<std::uint16_t>(fairy::protocol::Field::sequence),
-                   capture.sequence);
-  (void)fields.u8(static_cast<std::uint16_t>(fairy::protocol::Field::state), 1);
-  publish(fairy::protocol::RecordType::digital_input,
-          fairy::protocol::critical | fairy::protocol::actual_time |
-              fairy::protocol::synchronized,
-          capture.ticks, payload, fields.size(), true);
-}
-
 void publish_health(std::uint64_t now) {
   if (now - last_health_ticks < fairy::config::common_timer_hz) {
     return;
@@ -184,12 +126,6 @@ void publish_health(std::uint64_t now) {
                        fairy::protocol::Field::transport_transmit_errors),
                    rs485.transmit_errors);
   (void)fields.u32(
-      static_cast<std::uint16_t>(fairy::protocol::Field::ttl_capture_count),
-      korora_time::ttl_capture_count());
-  (void)fields.u32(
-      static_cast<std::uint16_t>(fairy::protocol::Field::ttl_capture_drops),
-      korora_time::ttl_capture_drops());
-  (void)fields.u32(
       static_cast<std::uint16_t>(fairy::protocol::Field::dropped_records),
       korora_ble::dropped_to_adelie());
   (void)fields.u32(static_cast<std::uint16_t>(fairy::protocol::Field::detail),
@@ -208,7 +144,7 @@ PendingPulse *allocate_pending(std::uint32_t sequence,
                                std::uint32_t width_us) {
   for (PendingPulse &pulse : pending) {
     if (!pulse.used) {
-      pulse = {true, false, sequence, width_us, target_ticks, 0};
+      pulse = {true, sequence, width_us, target_ticks};
       return &pulse;
     }
   }
@@ -222,24 +158,6 @@ PendingPulse *find_pending(std::uint32_t sequence) {
     }
   }
   return nullptr;
-}
-
-PendingPulse *closest_pending(std::uint64_t captured_ticks) {
-  PendingPulse *best = nullptr;
-  std::uint64_t best_distance = UINT64_MAX;
-  for (PendingPulse &pulse : pending) {
-    if (!pulse.used) {
-      continue;
-    }
-    const std::uint64_t distance = captured_ticks >= pulse.target_ticks
-                                       ? captured_ticks - pulse.target_ticks
-                                       : pulse.target_ticks - captured_ticks;
-    if (distance < best_distance) {
-      best = &pulse;
-      best_distance = distance;
-    }
-  }
-  return best_distance <= 8'000'000ULL ? best : nullptr;
 }
 
 bool send_ttl_command(std::uint32_t sequence, std::uint64_t target_ticks,
@@ -302,86 +220,34 @@ bool send_ttl_command(std::uint32_t sequence, std::uint64_t target_ticks,
   return false;
 }
 
-void random_fairy_command() {
-  const std::size_t board_count = korora_fairies::count();
-  for (std::size_t index = 0; index < board_count; ++index) {
-    korora_fairies::NodeSnapshot node;
-    if (!korora_fairies::snapshot(index, node) || node.logical_slot == 0xFFU) {
-      continue;
-    }
-    std::uint8_t field_buffer[32]{};
-    fairy::protocol::TlvWriter fields(field_buffer, sizeof(field_buffer));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::red),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::green),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u8(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::blue),
-        static_cast<std::uint8_t>(sys_rand32_get() & 0x3FU));
-    (void)fields.u32(
-        static_cast<std::uint16_t>(fairy::protocol::CommandField::duration_ms),
-        500);
-    fairy::protocol::MessageHeader header;
-    header.opcode = fairy::protocol::Opcode::set_rgb;
-    header.flags = fairy::protocol::require_response |
-                   fairy::protocol::execute_immediately;
-    header.command_id =
-        static_cast<std::uint32_t>(atomic_inc(&sequence_counter) + 1);
-    header.session_id = static_cast<std::uint32_t>(atomic_get(&session));
-    std::uint8_t message[fairy::protocol::adelie_max_message_size]{};
-    const std::size_t length = fairy::protocol::encode_adelie(
-        header, field_buffer, fields.size(), message, sizeof(message));
-    if (length != 0U) {
-      (void)korora_fairies::queue_command(node.address, message, length, 0);
-    }
-  }
-}
+void send_sync_test_valve_command() {
+  std::uint8_t field_buffer[16]{};
+  fairy::protocol::TlvWriter fields(field_buffer, sizeof(field_buffer));
+  (void)fields.u32(
+      static_cast<std::uint16_t>(fairy::protocol::CommandField::duration_ms),
+      sync_test_valve_duration_ms);
 
-void process_capture(const korora_time::Capture &capture) {
-  if (capture.kind == korora_time::CaptureKind::external_event) {
-    record_external(capture);
-    return;
-  }
-  k_mutex_lock(&state_mutex, K_FOREVER);
-  PendingPulse *match = closest_pending(capture.ticks);
-  if (match != nullptr) {
-    const bool implicit_acceptance = !match->confirmed;
-    if (implicit_acceptance) {
-      if (ttl_in_flight != 0U) {
-        --ttl_in_flight;
-      }
-      if (ttl_finite && ttl_remaining != 0U) {
-        --ttl_remaining;
-        if (ttl_remaining == 0U) {
-          atomic_clear(&ttl_enabled);
-          next_target = 0;
-        }
-      }
-    }
-    const PendingPulse copy = *match;
-    match->used = false;
-    k_mutex_unlock(&state_mutex);
-    if (implicit_acceptance) {
-      record_schedule(copy.sequence, copy.target_ticks, copy.width_us);
-    }
-    record_capture(copy.sequence, capture.ticks, copy.target_ticks,
-                   copy.generated_ticks);
-  } else {
-    k_mutex_unlock(&state_mutex);
-    record_capture(capture.sequence, capture.ticks, 0, 0);
+  fairy::protocol::MessageHeader header;
+  header.opcode = fairy::protocol::Opcode::actuate_valve;
+  header.flags = fairy::protocol::require_response |
+                 fairy::protocol::execute_immediately |
+                 fairy::protocol::safety_authorized;
+  header.command_id =
+      static_cast<std::uint32_t>(atomic_inc(&sequence_counter) + 1);
+  header.session_id = static_cast<std::uint32_t>(atomic_get(&session));
+
+  std::uint8_t message[fairy::protocol::adelie_max_message_size]{};
+  const std::size_t length = fairy::protocol::encode_adelie(
+      header, field_buffer, fields.size(), message, sizeof(message));
+  if (length != 0U) {
+    (void)korora_fairies::queue_command(sync_test_valve_address, message,
+                                        length, 0);
   }
 }
 
 void worker(void *, void *, void *) {
   k_sem_take(&start_sem, K_FOREVER);
   while (true) {
-    korora_time::Capture capture;
-    while (korora_time::pop_capture(capture)) {
-      process_capture(capture);
-    }
-
     const std::uint64_t now = korora_time::now();
     publish_health(now);
     k_mutex_lock(&state_mutex, K_FOREVER);
@@ -408,7 +274,7 @@ void worker(void *, void *, void *) {
 
     if (atomic_get(&test_enabled) != 0 &&
         k_uptime_get() >= next_test_command_ms) {
-      random_fairy_command();
+      send_sync_test_valve_command();
       next_test_command_ms =
           k_uptime_get() + static_cast<std::int64_t>(test_command_interval_ms);
     }
@@ -583,29 +449,27 @@ void note_galapagos_ttl_status(std::uint32_t sequence,
   k_mutex_lock(&state_mutex, K_FOREVER);
   PendingPulse *pulse = find_pending(sequence);
   if (pulse != nullptr) {
-    if (!pulse->confirmed && ttl_in_flight != 0U) {
+    if (ttl_in_flight != 0U) {
       --ttl_in_flight;
     }
     if (accepted) {
-      if (!pulse->confirmed) {
-        pulse->confirmed = true;
-        target_ticks = pulse->target_ticks;
-        width_us = pulse->width_us;
-        publish_schedule = true;
-        if (ttl_finite && ttl_remaining != 0U) {
-          --ttl_remaining;
-          if (ttl_remaining == 0U) {
-            atomic_clear(&ttl_enabled);
-            next_target = 0;
-          }
+      target_ticks = pulse->target_ticks;
+      width_us = pulse->width_us;
+      publish_schedule = true;
+      if (ttl_finite && ttl_remaining != 0U) {
+        --ttl_remaining;
+        if (ttl_remaining == 0U) {
+          atomic_clear(&ttl_enabled);
+          next_target = 0;
         }
       }
-    } else {
-      pulse->used = false;
-      if (atomic_get(&ttl_enabled) != 0) {
-        next_target = korora_time::now() + scheduling_lead_ticks * 2ULL;
-      }
+    } else if (atomic_get(&ttl_enabled) != 0) {
+      next_target = korora_time::now() + scheduling_lead_ticks * 2ULL;
     }
+
+    // The command response completes Korora's bookkeeping. There is no
+    // electrical TTL return capture to wait for.
+    pulse->used = false;
   }
   k_mutex_unlock(&state_mutex);
 
@@ -655,15 +519,34 @@ void record_transport_timing(std::uint16_t transfer_id,
 }
 
 void note_galapagos_ttl(std::uint32_t sequence, std::uint64_t,
-                        std::uint64_t korora_actual_ticks) {
+                        std::uint64_t) {
+  bool publish_schedule = false;
+  std::uint64_t target_ticks = 0;
+  std::uint32_t width_us = 0;
+
   k_mutex_lock(&state_mutex, K_FOREVER);
-  for (PendingPulse &pulse : pending) {
-    if (pulse.used && pulse.sequence == sequence) {
-      pulse.generated_ticks = korora_actual_ticks;
-      break;
+  PendingPulse *pulse = find_pending(sequence);
+  if (pulse != nullptr) {
+    if (ttl_in_flight != 0U) {
+      --ttl_in_flight;
     }
+    target_ticks = pulse->target_ticks;
+    width_us = pulse->width_us;
+    publish_schedule = true;
+    if (ttl_finite && ttl_remaining != 0U) {
+      --ttl_remaining;
+      if (ttl_remaining == 0U) {
+        atomic_clear(&ttl_enabled);
+        next_target = 0;
+      }
+    }
+    pulse->used = false;
   }
   k_mutex_unlock(&state_mutex);
+
+  if (publish_schedule) {
+    record_schedule(sequence, target_ticks, width_us);
+  }
 }
 
 } // namespace korora_experiment

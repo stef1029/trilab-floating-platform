@@ -8,7 +8,7 @@
  * of Fairy boards. The prototype can be built with -DFAIRY_MAX_BOARDS=2.
  */
 #ifndef FAIRY_MAX_BOARDS
-#define FAIRY_MAX_BOARDS 2
+#define FAIRY_MAX_BOARDS 5
 #endif
 
 #ifndef FAIRY_ENABLE_DEBUG_STREAM
@@ -25,7 +25,12 @@ inline constexpr std::uint8_t unassigned_address = 0x00;
 inline constexpr std::uint8_t korora_address = 0x01;
 inline constexpr std::uint8_t galapagos_address = 0x02;
 inline constexpr std::uint8_t adelie_address = 0x03;
+/* New public names are aliases: the established wire addresses stay valid. */
+inline constexpr std::uint8_t necneven_address = korora_address;
+inline constexpr std::uint8_t hecate_address = adelie_address;
 inline constexpr std::uint8_t fairy_address_base = 0x10;
+inline constexpr std::uint8_t unseelie_address_base = fairy_address_base;
+inline constexpr std::uint8_t will_o_wisp_address = 0x04;
 inline constexpr std::uint8_t discovery_address_base = 0x80;
 inline constexpr std::uint8_t broadcast_address = 0xFF;
 
@@ -35,6 +40,10 @@ inline constexpr std::uint32_t rs485_baud = 460800;
 
 inline constexpr std::uint8_t fairy_address(std::size_t zero_based_slot) {
   return static_cast<std::uint8_t>(fairy_address_base + zero_based_slot);
+}
+
+inline constexpr std::uint8_t unseelie_address(std::size_t zero_based_slot) {
+  return fairy_address(zero_based_slot);
 }
 
 inline constexpr std::uint8_t discovery_address(std::size_t zero_based_slot) {

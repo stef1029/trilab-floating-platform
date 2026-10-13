@@ -6,11 +6,23 @@
 #include "fairy_shared/clock_model.hpp"
 #include "fairy_shared/fairy_protocol.hpp"
 #include "fairy_shared/magellan_protocol.hpp"
+#include "fairy_shared/system_config.hpp"
 #include "fairy_shared/tlv.hpp"
 #include "fairy_shared/transport.hpp"
 
 int main() {
   using namespace fairy;
+
+  static_assert(config::max_fairies == 6);
+  static_assert(config::necneven_address == config::korora_address);
+  static_assert(config::hecate_address == config::adelie_address);
+  static_assert(config::will_o_wisp_address == 0x20);
+  static_assert(static_cast<std::uint16_t>(protocol::Opcode::set_illumination) ==
+                0x0206);
+  static_assert(static_cast<std::uint16_t>(protocol::Opcode::scry_stream) ==
+                0x0500);
+  static_assert(static_cast<std::uint16_t>(protocol::RecordType::scry_sample) ==
+                0x0603);
 
   std::uint8_t tlv_bytes[64]{};
   protocol::TlvWriter tlv(tlv_bytes, sizeof(tlv_bytes));

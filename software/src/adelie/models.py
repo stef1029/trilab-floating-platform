@@ -95,6 +95,8 @@ class LocalSensorState:
     battery_current_ma: int | None = None
     battery_soc_per_mille: int | None = None
     battery_health_per_mille: int | None = None
+    charge_status: str = ""
+    charger_error: str = ""
 
 
 @dataclass(slots=True)

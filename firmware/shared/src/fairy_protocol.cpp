@@ -83,11 +83,13 @@ bool record_visible_at(RecordType type, TelemetryLevel level) {
   case RecordType::clock_model_reset:
   case RecordType::local_sensors:
   case RecordType::power_status:
+  case RecordType::illumination_status:
     return level >= TelemetryLevel::standard;
 
   case RecordType::sync_observation:
   case RecordType::imu_samples:
   case RecordType::clock_pair:
+  case RecordType::scry_sample:
     return level >= TelemetryLevel::full;
   }
   return level >= TelemetryLevel::full;

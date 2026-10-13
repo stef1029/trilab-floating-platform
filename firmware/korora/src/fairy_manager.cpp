@@ -112,6 +112,10 @@ fairy::protocol::Status assign(Node &node, std::uint8_t address,
   }
   fairy::protocol::MagellanView response_view;
   fairy::protocol::Assignment response_assignment;
+
+  korora_debug::log("MAGELLAN_ASSIGN_RESPONSE error=%d length=%u\r\n", error,
+                    static_cast<unsigned>(response.length));
+
   if (!fairy::protocol::decode_magellan(response.payload.data(),
                                         response.length, response_view) ||
       response_view.header.type != fairy::protocol::MagellanType::assigned ||
@@ -459,8 +463,17 @@ std::size_t discovery_round(std::uint8_t round) {
   const std::size_t found = korora_rs485::discover(next_nonce(), round, offers,
                                                    fairy::config::max_fairies);
   std::size_t added = 0;
+
+  korora_debug::log("MAGELLAN_DISCOVERY round=%u offers=%u\r\n",
+                    static_cast<unsigned>(round), static_cast<unsigned>(found));
+
   for (std::size_t i = 0; i < found; ++i) {
     k_mutex_lock(&nodes_mutex, K_FOREVER);
+
+    korora_debug::log("MAGELLAN_OFFER uuid=%02x%02x%02x%02x...\r\n",
+                      offers[i].offer.uuid[0], offers[i].offer.uuid[1],
+                      offers[i].offer.uuid[2], offers[i].offer.uuid[3]);
+
     Node *existing = find_uuid(offers[i].offer.uuid);
     if (existing != nullptr) {
       const bool was_present = existing->present;
@@ -508,7 +521,14 @@ std::size_t discovery_round(std::uint8_t round) {
     const std::uint8_t temporary = fairy::config::discovery_address(node_index);
     k_mutex_unlock(&nodes_mutex);
 
-    if (assign(node, temporary, 0xFF) == fairy::protocol::Status::ok) {
+    const auto assign_status = assign(node, temporary, 0xFF);
+
+    korora_debug::log(
+        "MAGELLAN_ASSIGN uuid=%02x%02x... address=0x%02x status=%u\r\n",
+        node.uuid[0], node.uuid[1], temporary,
+        static_cast<unsigned>(assign_status));
+
+    if (assign_status == fairy::protocol::Status::ok) {
       k_mutex_lock(&nodes_mutex, K_FOREVER);
       ++inventory_generation;
       k_mutex_unlock(&nodes_mutex);

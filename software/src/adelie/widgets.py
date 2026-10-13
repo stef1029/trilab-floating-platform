@@ -822,6 +822,8 @@ class TransportDiagnostics(QFrame):
 
 
 class LocalSensorsPanel(QFrame):
+    status_led_requested = Signal(int, bool)
+
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumWidth(0)
@@ -851,8 +853,21 @@ class LocalSensorsPanel(QFrame):
         self.rate = StatLabel("-")
         self.raw_dump = StatLabel("-")
         self.i2c_errors = StatLabel("0")
-        self.power = StatLabel("nRF52840 DK · power telemetry unavailable")
-        self.battery = StatLabel("Battery / fuel gauge unavailable on DK")
+        self.power = StatLabel("nPM1300 waiting")
+        self.charge = StatLabel("Charge status waiting")
+        self.battery = StatLabel("Battery telemetry waiting")
+
+        self.led1 = QPushButton("LED 1")
+        self.led2 = QPushButton("LED 2")
+        for button in (self.led1, self.led2):
+            button.setCheckable(True)
+            button.setEnabled(False)
+        self.led1.toggled.connect(
+            lambda enabled: self.status_led_requested.emit(1, enabled)
+        )
+        self.led2.toggled.connect(
+            lambda enabled: self.status_led_requested.emit(2, enabled)
+        )
 
         values = QGridLayout()
         values.addWidget(QLabel("Acceleration"), 0, 0)
@@ -874,7 +889,13 @@ class LocalSensorsPanel(QFrame):
         power_title.setStyleSheet("font-weight: 700; color: #cebfff;")
         power_box.addWidget(power_title)
         power_box.addWidget(self.power)
+        power_box.addWidget(self.charge)
         power_box.addWidget(self.battery)
+        led_row = QHBoxLayout()
+        led_row.addWidget(QLabel("Programmable"))
+        led_row.addWidget(self.led1)
+        led_row.addWidget(self.led2)
+        power_box.addLayout(led_row)
         power_box.addStretch()
 
         pose_box = QVBoxLayout()
@@ -949,7 +970,13 @@ class LocalSensorsPanel(QFrame):
         self.i2c_errors.setText(f"{state.i2c_errors:,}")
 
         self.power.setText(state.power_source or "power source unknown")
+        self.led1.setEnabled(state.pmic_present)
+        self.led2.setEnabled(state.pmic_present)
         if state.pmic_present:
+            charge_text = state.charge_status or "Charger status unavailable"
+            if state.charger_error:
+                charge_text += f" · ERROR: {state.charger_error}"
+            self.charge.setText(charge_text)
             details: list[str] = []
             if state.battery_millivolts is not None:
                 details.append(f"{state.battery_millivolts / 1000:.3f} V")
@@ -963,8 +990,8 @@ class LocalSensorsPanel(QFrame):
             self.battery.setText(" · ".join(
                 details) if details else "PMIC online")
         else:
-            self.battery.setText(
-                "Battery / fuel gauge unavailable on nRF52840 DK")
+            self.charge.setText("nPM1300 unavailable")
+            self.battery.setText("nPM1300 unavailable")
 
         if state.sample_count == self._last_sample_count or not state.imu_present:
             return
