@@ -10,10 +10,10 @@ Rebuilding the system one layer at a time. Nothing here is used by
 | **[01-blink](01-blink/)** | toolchain, flashing, console, both architectures | DK + Nucleo |
 | **[02-ble](02-ble/)** | GATT service, write in / notify out, a Python host | DK |
 | **[03-protocol](03-protocol/)** | real Transport v1 across BLE and UART | DK + Nucleo |
+| **[04-rs485](04-rs485/)** | transceivers, the DE line, and turnaround timing | DK + Nucleo + 2 transceivers |
 
 ### Planned
 
-4. **RS485** — swap the direct UART for transceivers and a direction pin
 5. **Adelie v2** — TLV payloads instead of `[opcode, value]`
 6. **Magellan** — discovery and address assignment
 7. **Timer + SYNC** — TIMER2 → PPI → GPIOTE, hardware-timed pulses

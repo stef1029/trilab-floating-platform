@@ -4,7 +4,8 @@
 		"${workspaceFolder}/firmware/galapagos",
 		"${workspaceFolder}/sandbox/01-blink/nordic",
 		"${workspaceFolder}/sandbox/02-ble/peripheral",
-		"${workspaceFolder}/sandbox/03-protocol/bridge"
+		"${workspaceFolder}/sandbox/03-protocol/bridge",
+		"${workspaceFolder}/sandbox/04-rs485/bridge"
 	],
 
 	// clangd finds each project's compile_commands.json on its own and picks
