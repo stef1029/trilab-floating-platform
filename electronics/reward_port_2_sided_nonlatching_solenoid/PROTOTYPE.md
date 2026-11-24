@@ -166,7 +166,7 @@ Power the Grove module from **3.3 V**, rather than 5 V, so its UART-side logic r
 | A                         | RS-485 A on hub module |
 | B                         | RS-485 B on hub module |
 
-The Grove board has automatic transmit-direction control, so **PA12/DE is not connected for the prototype**. Configure USART1 for 500,000 baud, 8-N-1, normal UART mode rather than STM32 hardware-DE mode.
+The Grove board has automatic transmit-direction control, so **PA12/DE is not connected for the prototype**. Configure USART1 for 460,800 baud, 8-N-1, normal UART mode rather than STM32 hardware-DE mode.
 
 Across the cable:
 

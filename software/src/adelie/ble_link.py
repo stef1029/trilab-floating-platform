@@ -11,9 +11,9 @@ import traceback
 from bleak import BleakClient, BleakScanner
 
 from .constants import (
-    ADELIE_ADDRESS,
+    HOST_ADDRESS,
     Channel,
-    KORORA_NAME,
+    HUB_NAME,
     RX_UUID,
     TX_UUID,
     TransportFlag,
@@ -57,7 +57,7 @@ class BleLink:
         on_state: StateCallback,
         on_sent: SentCallback | None = None,
         on_write_complete: WriteCompleteCallback | None = None,
-        device_name: str = KORORA_NAME,
+        device_name: str = HUB_NAME,
     ) -> None:
         self._on_message = on_message
         self._on_state = on_state
@@ -95,7 +95,7 @@ class BleLink:
 
     def stop(self) -> None:
         self._stop.set()
-        self._outgoing.put((0, Channel.ADELIE, 0, 0, b""))
+        self._outgoing.put((0, Channel.COMMAND, 0, 0, b""))
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
@@ -207,7 +207,7 @@ class BleLink:
             try:
                 message = reassembler.accept(frame)
                 if message is not None:
-                    if message.destination != ADELIE_ADDRESS:
+                    if message.destination != HOST_ADDRESS:
                         error = ValueError(
                             "BLE message is not addressed to Adelie"
                         )
@@ -233,10 +233,10 @@ class BleLink:
             characteristic = client.services.get_characteristic(RX_UUID)
             if characteristic is None:
                 raise RuntimeError(
-                    "Korora Adelie RX characteristic is missing")
+                    "Hub Adelie RX characteristic is missing")
 
             # BlueZ can otherwise leave this link at the 23 byte default ATT
-            # MTU. With the 14 byte Fairy transport header that permits only
+            # MTU. With the 14 byte node transport header that permits only
             # six payload bytes per frame and turns a small command into many
             # acknowledged connection events. Bleak documents this guarded
             # backend call as the Linux MTU acquisition workaround.
@@ -279,7 +279,7 @@ class BleLink:
             except Exception:
                 mtu_write_size = 20
 
-            # Korora is configured for an ATT MTU of 247, so its maximum attribute
+            # Hub is configured for an ATT MTU of 247, so its maximum attribute
             # value is 244 bytes.
             write_size = min(244, max(reported_write_size, mtu_write_size))
 
@@ -322,7 +322,7 @@ class BleLink:
                 fragments = list(fragment_message(
                     channel=channel,
                     flags=TransportFlag(raw_flags),
-                    source=ADELIE_ADDRESS,
+                    source=HOST_ADDRESS,
                     destination=destination,
                     transfer_id=transfer_id,
                     payload=payload,
@@ -354,7 +354,7 @@ class BleLink:
 
             if disconnected.is_set():
                 self._update_diagnostics(connected=False)
-                self._on_state("disconnected", "Korora disconnected")
+                self._on_state("disconnected", "Hub disconnected")
             else:
                 await client.stop_notify(TX_UUID)
                 self._update_diagnostics(connected=False)

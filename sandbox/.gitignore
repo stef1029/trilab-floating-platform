@@ -1,0 +1,13 @@
+# Zephyr / west
+build*/
+# PlatformIO
+.pio/
+# build artefacts
+*.elf
+*.bin
+*.hex
+*.map
+
+# editor / IntelliSense
+compile_commands.json
+.cache/

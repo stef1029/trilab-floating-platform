@@ -38,23 +38,23 @@ The CRC initial value is `0xFFFF` and the polynomial is `0x1021`.
 
 | Value | Protocol    |
 | ----: | ----------- |
-|     1 | Fairy v3    |
-|     2 | Adelie v2   |
-|     3 | Magellan v1 |
+|     1 | Record v3    |
+|     2 | Command v2   |
+|     3 | Discovery v1 |
 
 ## Addresses
 
 |         Value | Meaning                       |
 | ------------: | ----------------------------- |
-|        `0x00` | Unassigned Fairy              |
-|        `0x01` | Korora                        |
-|        `0x02` | Galapagos                     |
+|        `0x00` | Unassigned node              |
+|        `0x01` | Hub                        |
+|        `0x02` | TTL generator                     |
 |        `0x03` | Adelie                        |
-| `0x10` onward | Assigned Fairy addresses      |
+| `0x10` onward | Assigned node addresses      |
 | `0x80` onward | Temporary discovery addresses |
 |        `0xFF` | Broadcast                     |
 
-Fairy index 0 maps to `0x10`. Fairy index 1 maps to `0x11`.
+Node index 0 maps to `0x10`. Node index 1 maps to `0x11`.
 
 ## Flags
 
@@ -80,16 +80,16 @@ The RS485 bus uses:
 - No parity
 - 1 stop bit
 - Automatic direction control on the prototype
-- Korora master polling
-- Fairy transmission only after a request or discovery slot
+- Hub master polling
+- Node transmission only after a request or discovery slot
 
-Korora holds one mutex for the complete request, response, and acknowledgement transaction. This prevents two writers from interleaving bytes.
+Hub holds one mutex for the complete request, response, and acknowledgement transaction. This prevents two writers from interleaving bytes.
 
 ## BLE encoding
 
 Each GATT write or notification contains one raw transport frame. Fragment payload size is reduced to fit the negotiated ATT MTU.
 
-Korora exposes the Adelie service:
+Hub exposes the Adelie service:
 
 | Item    | UUID                                   |
 | ------- | -------------------------------------- |
@@ -97,7 +97,7 @@ Korora exposes the Adelie service:
 | RX      | `a88279d1-7009-4bee-a6f8-e1dc3ff02b92` |
 | TX      | `a88279d2-7009-4bee-a6f8-e1dc3ff02b92` |
 
-Galapagos exposes:
+TTL generator exposes:
 
 | Item    | UUID                                   |
 | ------- | -------------------------------------- |

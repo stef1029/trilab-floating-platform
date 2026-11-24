@@ -2,16 +2,16 @@
 
 ## Scope
 
-This document defines the current communication and logging interfaces between Korora, Fairy, Galapagos, and Adelie.
+This document defines the current communication and logging interfaces between the hub, node, TTL generator, and Adelie.
 
 It covers:
 
 - The shared 40 byte remote record frame
-- Fairy I2C transactions
-- Galapagos Bluetooth notifications
-- Korora to Galapagos scheduled TTL commands
+- Node I2C transactions
+- TTL generator Bluetooth notifications
+- Hub to TTL generator scheduled TTL commands
 - Adelie 20 byte control frames
-- Korora stream schema version 3
+- Hub stream schema version 3
 - Clock model and event matching rules
 - Concurrency and data integrity requirements
 
@@ -22,17 +22,17 @@ All numeric wire fields use little endian byte order unless stated otherwise.
 The canonical names are:
 
 ```text
-korora
-fairy
-galapagos
+hub
+node
+ttl_generator
 adelie
 ```
 
-Older logs may contain `reward_port`. Parsers provided normalize that legacy name to `fairy`.
+Older logs may contain `reward_port`. Parsers provided normalize that legacy name to `node`.
 
 ## Shared remote frame
 
-Fairy and Galapagos use the same 40 byte frame format.
+Node and TTL generator use the same 40 byte frame format.
 
 Frame constants:
 
@@ -196,9 +196,9 @@ Bits 5 through 7 are reserved.
 
 ## Record flags
 
-Bit 0 is currently used by Fairy to report hardware overcapture for the associated timer channel.
+Bit 0 is currently used by node to report hardware overcapture for the associated timer channel.
 
-Galapagos currently sends zero record flags.
+TTL generator currently sends zero record flags.
 
 All unknown record flag bits must be preserved in raw logs and ignored by older receivers unless the protocol version changes their meaning.
 
@@ -226,13 +226,13 @@ Value `3`
 
 Name `COMMAND_ACK`
 
-Meaning Fairy command acknowledgement
+Meaning node command acknowledgement
 
 Value `4`
 
 Name `TTL_GENERATED`
 
-Meaning Galapagos generated a scheduled TTL rising edge
+Meaning TTL generator generated a scheduled TTL rising edge
 
 ## Common timestamp fields
 
@@ -240,13 +240,13 @@ Meaning Galapagos generated a scheduled TTL rising edge
 
 This is the source timestamp associated with the record.
 
-For Fairy it is a 64 bit TIM2 timestamp in a 16 MHz domain.
+For node it is a 64 bit TIM2 timestamp in a 16 MHz domain.
 
-For a Galapagos synchronization record it is the selected Bluetooth anchor timestamp multiplied by 16.
+For a TTL generator synchronization record it is the selected Bluetooth anchor timestamp multiplied by 16.
 
-For a Galapagos event record it is the GRTC hardware capture timestamp multiplied by 16.
+For a TTL generator event record it is the GRTC hardware capture timestamp multiplied by 16.
 
-For a Galapagos TTL generated record it is the programmed GRTC SET compare timestamp multiplied by 16.
+For a TTL generator TTL generated record it is the programmed GRTC SET compare timestamp multiplied by 16.
 
 ### snapshot_ticks
 
@@ -262,17 +262,17 @@ The receiver must treat impossible ordering as a malformed or stale frame.
 
 This is a cumulative source counter.
 
-Fairy increments it for timer overcapture or FIFO overflow.
+Node increments it for timer overcapture or FIFO overflow.
 
-Galapagos increments it when a report cannot be queued or is discarded because the link is unavailable.
+TTL generator increments it when a report cannot be queued or is discarded because the link is unavailable.
 
 ### transport_error_count
 
 This is a cumulative source counter.
 
-Fairy uses it for non address failure I2C errors.
+Node uses it for non address failure I2C errors.
 
-Galapagos uses it for Bluetooth notification failures and related transport failures.
+TTL generator uses it for Bluetooth notification failures and related transport failures.
 
 ### pending_count
 
@@ -288,43 +288,43 @@ It must not be used for matching.
 
 The 32 bit auxiliary field depends on source and record type.
 
-### Fairy synchronization and event records
+### Node synchronization and event records
 
-Existing Fairy firmware may place boot reset status or another source diagnostic value here.
+Existing node firmware may place boot reset status or another source diagnostic value here.
 
-Korora must not assume that this field is an event sequence unless the Fairy firmware version explicitly defines it.
+Hub must not assume that this field is an event sequence unless the node firmware version explicitly defines it.
 
-Current Korora analysis may assign a synthetic increasing event ID to Fairy event records.
+Current Hub analysis may assign a synthetic increasing event ID to node event records.
 
-### Fairy command acknowledgement
+### Node command acknowledgement
 
 The command token is carried in the low seven bits.
 
-The acknowledgement must match the active command token in Korora.
+The acknowledgement must match the active command token in the hub.
 
-### Galapagos synchronization record
+### TTL generator synchronization record
 
 The low 16 bits contain the Bluetooth connection event counter.
 
-Korora unwraps and matches this counter to its own controller anchor observation.
+Hub unwraps and matches this counter to its own controller anchor observation.
 
-### Galapagos event record
+### TTL generator event record
 
-The field contains the Galapagos external event sequence.
+The field contains the TTL generator external event sequence.
 
 The sequence increases once for each accepted GPIO capture.
 
-### Galapagos TTL generated record
+### TTL generator TTL generated record
 
-The field contains the Korora assigned TTL test sequence.
+The field contains the hub assigned TTL test sequence.
 
-Korora uses this sequence to associate the returned generated timestamp with the active scheduled pulse.
+Hub uses this sequence to associate the returned generated timestamp with the active scheduled pulse.
 
-## Fairy I2C transport
+## Node I2C transport
 
-Korora is the I2C controller.
+Hub is the I2C controller.
 
-Fairy is the target at unshifted address:
+Node is the target at unshifted address:
 
 ```text
 0x42
@@ -332,47 +332,47 @@ Fairy is the target at unshifted address:
 
 ### Read transaction
 
-Korora reads exactly 40 bytes.
+Hub reads exactly 40 bytes.
 
-Fairy presents one atomic snapshot of the oldest queued record.
+Node presents one atomic snapshot of the oldest queued record.
 
 A complete successful target transmit removes that record from the queue.
 
 An aborted transfer leaves the record queued for retry.
 
-Korora validates magic, version, length, reserved values, and CRC before using the frame.
+Hub validates magic, version, length, reserved values, and CRC before using the frame.
 
-### Fairy FIFO
+### Node FIFO
 
-The current Fairy FIFO contains 16 records.
+The current node FIFO contains 16 records.
 
 Synchronization, event, and command acknowledgement records share the transport.
 
 Queue overflow increments the capture loss count and can latch a clock fault.
 
-### Fairy synchronization pairing
+### Node synchronization pairing
 
-Fairy does not need to know the Korora pulse number.
+Node does not need to know the hub pulse number.
 
-Korora assigns the pulse identity using its own hardware pulse schedule and the acceptance window.
+Hub assigns the pulse identity using its own hardware pulse schedule and the acceptance window.
 
 The pairing process is:
 
-1. Korora emits a hardware synchronization pulse
+1. Hub emits a hardware synchronization pulse
 
-2. Fairy captures the edge
+2. Node captures the edge
 
-3. Korora polls Fairy
+3. Hub polls node
 
-4. Korora checks frame integrity
+4. Hub checks frame integrity
 
-5. Korora checks transport age and pulse phase
+5. Hub checks transport age and pulse phase
 
-6. Korora holds at most one valid candidate for the pulse window
+6. Hub holds at most one valid candidate for the pulse window
 
-7. Korora admits the candidate after the window closes
+7. Hub admits the candidate after the window closes
 
-8. Korora sends the accepted pair to the Fairy clock model
+8. Hub sends the accepted pair to the node clock model
 
 A second valid synchronization candidate in the same acceptance window invalidates that window.
 
@@ -380,7 +380,7 @@ A stale synchronization record is drained and reported but is not assigned to a 
 
 Event and command acknowledgement records are handled independently from synchronization admission.
 
-### Fairy command bytes
+### Node command bytes
 
 Value `0x01`
 
@@ -410,20 +410,20 @@ token 16
 command byte 0x90
 ```
 
-Fairy records command receipt, executes the action in thread context, and queues a command acknowledgement record.
+records command receipt, executes the action in thread context, and queues a command acknowledgement record.
 
 The action must not run inside the I2C interrupt callback.
 
-## Galapagos Bluetooth transport
+## TTL generator Bluetooth transport
 
-Galapagos is a Bluetooth peripheral.
+TTL generator is a Bluetooth peripheral.
 
-Korora is the Bluetooth central for this link.
+Hub is the Bluetooth central for this link.
 
 The advertised name is:
 
 ```text
-galapagos
+ttl_generator
 ```
 
 ### Service UUID values
@@ -452,7 +452,7 @@ The TTL control characteristic accepts writes without response. The anchor repor
 
 Each notification contains exactly one 40 byte shared remote frame.
 
-Galapagos sends synchronization, external event, and TTL generated records through one outgoing queue.
+TTL generator sends synchronization, external event, and TTL generated records through one outgoing queue.
 
 The notification path must permit only one active notification at a time.
 
@@ -473,7 +473,7 @@ Temporary memory exhaustion or retry conditions may be retried after a short del
 
 A disconnect or disabled notification state should purge stale queued records.
 
-### Galapagos anchor report
+### TTL generator anchor report
 
 The SoftDevice Controller provides:
 
@@ -481,7 +481,7 @@ The SoftDevice Controller provides:
 - Connection event counter
 - Anchor timestamp in microseconds
 
-Galapagos selects reports according to the configured report cadence.
+TTL generator selects reports according to the configured report cadence.
 
 The current target report rate is approximately 1 Hz.
 
@@ -489,7 +489,7 @@ The transmitted local timestamp is the anchor microsecond value multiplied by 16
 
 The connection event counter is placed in the low 16 bits of the auxiliary field.
 
-### Galapagos hardware event capture
+### TTL generator hardware event capture
 
 The overlay defines P1.11 as the event input.
 
@@ -511,9 +511,9 @@ The transmitted local timestamp is the captured microsecond value multiplied by 
 
 The interrupt handler must not use a mutex, wait for Bluetooth, or perform serial logging.
 
-## Korora to Galapagos scheduled TTL command
+## Hub to TTL generator scheduled TTL command
 
-Korora and Galapagos use a separate 20 byte little endian frame for scheduled TTL commands.
+Hub and TTL generator use a separate 20 byte little endian frame for scheduled TTL commands.
 
 This frame is independent from the Adelie 20 byte control frame and uses different magic and field meanings.
 
@@ -571,7 +571,7 @@ Field `pulse_width_us`
 
 ### Command validation
 
-Galapagos must reject a command when:
+TTL generator must reject a command when:
 
 - The frame length is not 20 bytes
 - The magic is not `0x544C`
@@ -585,7 +585,7 @@ The current minimum lead time is 50000 microseconds.
 
 The current maximum accepted pulse width is 100000 microseconds.
 
-### Galapagos TTL generation
+### TTL generator TTL generation
 
 The TTL output is P1.12.
 
@@ -611,7 +611,7 @@ The CLR compare is programmed at the target time plus `pulse_width_us`.
 
 The physical rising edge is generated by hardware and does not wait for the compare interrupt callback.
 
-When the SET compare occurs, Galapagos queues a shared remote frame with record type `TTL_GENERATED`.
+When the SET compare occurs, TTL generator queues a shared remote frame with record type `TTL_GENERATED`.
 
 For that frame:
 
@@ -619,28 +619,28 @@ For that frame:
 - `snapshot_ticks` is the local timestamp when the report snapshot is created
 - `auxiliary` is the TTL sequence from the scheduling command
 
-### Korora TTL acquisition
+### Hub TTL acquisition
 
-Galapagos P1.12 is wired to Korora P1.12 with a common ground.
+TTL generator P1.12 is wired to the hub P1.12 with a common ground.
 
-Korora captures the returned rising edge through:
+Hub captures the returned rising edge through:
 
 ```text
-Korora P1.12 rising edge
+Hub P1.12 rising edge
 → GPIOTE input event
 → PPI or GPPI connection
 → TIMER3 CAPTURE0
 ```
 
-TIMER3 is cleared from the same TIMER2 COMPARE0 event that begins each 4 Hz reference interval. Korora combines the captured TIMER3 phase with the current TIMER2 period count to reconstruct a 64 bit Korora timestamp.
+TIMER3 is cleared from the same TIMER2 COMPARE0 event that begins each 4 Hz reference interval. Hub combines the captured TIMER3 phase with the current TIMER2 period count to reconstruct a 64 bit Hub timestamp.
 
-The current direct digital connection assumes a Galapagos output voltage compatible with the Korora input threshold.
+The current direct digital connection assumes a TTL generator output voltage compatible with the hub input threshold.
 
 The standard automated test uses a 300 millisecond lead time, a 1000 millisecond period, and a 100 microsecond pulse width.
 
 ## Adelie control frame
 
-Adelie and Korora use a separate 20 byte application frame.
+Adelie and the hub use a separate 20 byte application frame.
 
 Frame constants:
 
@@ -698,13 +698,13 @@ Value `0x01`
 
 Name `CLOCK_SYNC_REQUEST`
 
-Meaning request one Korora clock exchange reply
+Meaning request one Hub clock exchange reply
 
 Value `0x02`
 
-Name `FAIRY_DO_NOW_REQUEST`
+Name `NODE_DO_NOW_REQUEST`
 
-Meaning execute an immediate Fairy command
+Meaning execute an immediate node command
 
 ## Adelie notification types
 
@@ -712,45 +712,45 @@ Value `0x81`
 
 Name `CLOCK_REPLY`
 
-Timestamp meaning Korora receive time
+Timestamp meaning Hub receive time
 
-Value meaning Korora reply queue time difference from receive time
+Value meaning Hub reply queue time difference from receive time
 
 Value `0x90`
 
-Name `COMMAND_KORORA_RX`
+Name `COMMAND_HUB_RX`
 
-Meaning Korora received the Adelie command
+Meaning Hub received the Adelie command
 
 Value `0x91`
 
-Name `COMMAND_FAIRY_TX_START`
+Name `COMMAND_NODE_TX_START`
 
-Meaning Korora started the Fairy I2C command transfer
+Meaning Hub started the node I2C command transfer
 
 Value `0x92`
 
-Name `COMMAND_FAIRY_RX`
+Name `COMMAND_NODE_RX`
 
-Meaning Fairy received the command
+Meaning node received the command
 
 Value `0x93`
 
-Name `COMMAND_FAIRY_EXEC`
+Name `COMMAND_NODE_EXEC`
 
-Meaning Fairy completed the immediate action timestamp
+Meaning node completed the immediate action timestamp
 
 Value `0x94`
 
-Name `COMMAND_KORORA_ACK_RX`
+Name `COMMAND_HUB_ACK_RX`
 
-Meaning Korora received the Fairy acknowledgement
+Meaning Hub received the node acknowledgement
 
 Value `0x95`
 
-Name `COMMAND_KORORA_DONE_TX`
+Name `COMMAND_HUB_DONE_TX`
 
-Meaning Korora queued or submitted the final result notification
+Meaning Hub queued or submitted the final result notification
 
 Value `0xFF`
 
@@ -782,7 +782,7 @@ Name `TIMEOUT`
 
 Value `5`
 
-Name `FAIRY_MODEL_INVALID`
+Name `NODE_MODEL_INVALID`
 
 Value `6`
 
@@ -802,19 +802,19 @@ Adelie time immediately before the write
 
 `t2`
 
-Korora time in the receive callback
+Hub time in the receive callback
 
 `t3`
 
-Korora time immediately before the reply is queued
+Hub time immediately before the reply is queued
 
 `t4`
 
 Adelie time in the notification callback
 
-The network round trip is the full Adelie elapsed interval after removing Korora processing time.
+The network round trip is the full Adelie elapsed interval after removing Hub processing time.
 
-The clock pair uses the midpoint of the Adelie interval and the midpoint of the Korora interval.
+The clock pair uses the midpoint of the Adelie interval and the midpoint of the hub interval.
 
 The rolling model uses the latest 16 accepted exchanges.
 
@@ -828,31 +828,31 @@ A normal command progresses through:
 
 1. Adelie command transmit
 
-2. Korora command receive
+2. Hub command receive
 
-3. Korora Fairy transfer start
+3. Hub node transfer start
 
-4. Fairy command receive
+4. Node command receive
 
-5. Fairy command action complete
+5. Node command action complete
 
-6. Korora acknowledgement receive
+6. Hub acknowledgement receive
 
-7. Korora result queue
+7. Hub result queue
 
-8. Korora result transmit submission
+8. Hub result transmit submission
 
 9. Adelie result receive
 
 The final end to end round trip uses Adelie send time and Adelie receive time.
 
-Internal stage times use Korora and Fairy hardware timestamp domains after conversion where required.
+Internal stage times use Hub and node hardware timestamp domains after conversion where required.
 
-The 0x95 timestamp is the Korora result queue or submission time. It is not guaranteed to be the physical Bluetooth radio transmit start.
+The 0x95 timestamp is the hub result queue or submission time. It is not guaranteed to be the physical Bluetooth radio transmit start.
 
-## Korora stream schema version 3
+## Hub stream schema version 3
 
-Korora begins the machine readable stream with:
+Hub begins the machine readable stream with:
 
 ```text
 SCHEMA,3
@@ -882,11 +882,11 @@ Remote node name
 
 `sync_id`
 
-Fairy pulse number or unwrapped Galapagos connection event counter
+Node pulse number or unwrapped TTL generator connection event counter
 
 `hub_ticks`
 
-Korora timestamp associated with the pair
+Hub timestamp associated with the pair
 
 `local_ticks`
 
@@ -948,7 +948,7 @@ Local reference point for the affine model
 
 `hub_reference_ticks`
 
-Korora value at the reference point
+Hub value at the reference point
 
 `rms_ns`
 
@@ -974,7 +974,7 @@ Field meanings:
 
 `event_id`
 
-Identity assigned by the source or by Korora
+Identity assigned by the source or by the hub
 
 `kind`
 
@@ -990,7 +990,7 @@ Frequency of the local timestamp domain
 
 `hub_ticks`
 
-Timestamp expressed in Korora time when available
+Timestamp expressed in the hub time when available
 
 `state`
 
@@ -1004,11 +1004,11 @@ Age in the source local domain
 
 `LOCAL`
 
-The timestamp is already in Korora time
+The timestamp is already in the hub time
 
 `TRACK`
 
-A valid model converted the timestamp into Korora time
+A valid model converted the timestamp into the hub time
 
 `UNSYNC`
 
@@ -1016,7 +1016,7 @@ No valid model was available
 
 `REMOTE`
 
-Korora received the timestamp but does not own the source conversion model
+Hub received the timestamp but does not own the source conversion model
 
 For `UNSYNC`, the hub timestamp sentinel is outside the valid time range and must not be plotted as a real timestamp.
 
@@ -1045,17 +1045,17 @@ Format:
 EVENT_MATCH,node,event_id,reference_node,reference_event_id,converted_hub_ticks,reference_hub_ticks,error_ns
 ```
 
-Korora emits this after matching a converted remote GPIO event to a cached Korora GPIO event.
+Hub emits this after matching a converted remote GPIO event to a cached Hub GPIO event.
 
-The signed error is the converted remote event time relative to the Korora reference time.
+The signed error is the converted remote event time relative to the hub reference time.
 
-A positive error means the converted remote event is later than the Korora reference event.
+A positive error means the converted remote event is later than the hub reference event.
 
 A match is valid only when:
 
 - The remote model is in `TRACK`
 - The converted timestamp is valid
-- A Korora reference event exists inside the configured match window
+- A Hub reference event exists inside the configured match window
 - The reference event ID is greater than zero
 
 Zero reference IDs are invalid sentinels and must not be included in matched event plots.
@@ -1065,10 +1065,10 @@ Zero reference IDs are invalid sentinels and must not be included in matched eve
 Format:
 
 ```text
-TTL_PULSE_SCHEDULED,node,sequence,target_hub_ticks,target_galapagos_ticks,pulse_width_us
+TTL_PULSE_SCHEDULED,node,sequence,target_hub_ticks,target_ttl_generator_ticks,pulse_width_us
 ```
 
-Korora emits this after it has converted the selected Korora target into the Galapagos local domain and successfully submitted the scheduling write.
+Hub emits this after it has converted the selected Hub target into the TTL generator local domain and successfully submitted the scheduling write.
 
 ## TTL_PULSE_GENERATED record
 
@@ -1078,9 +1078,9 @@ Format:
 TTL_PULSE_GENERATED,node,sequence,generated_local_ticks,generated_hub_ticks,target_hub_ticks,generation_error_ns
 ```
 
-`generated_local_ticks` is the Galapagos GRTC SET compare timestamp in the nominal 16 MHz Galapagos domain.
+`generated_local_ticks` is the TTL generator GRTC SET compare timestamp in the nominal 16 MHz TTL generator domain.
 
-`generated_hub_ticks` is that timestamp converted through the current Galapagos affine model.
+`generated_hub_ticks` is that timestamp converted through the current TTL generator affine model.
 
 The generation error is:
 
@@ -1096,7 +1096,7 @@ Format:
 TTL_PULSE_ACQUIRED,node,sequence,acquired_hub_ticks,target_hub_ticks,total_error_ns
 ```
 
-`acquired_hub_ticks` is the Korora TIMER3 hardware capture reconstructed into the Korora 64 bit time domain.
+`acquired_hub_ticks` is the hub TIMER3 hardware capture reconstructed into the hub 64 bit time domain.
 
 The total error is:
 
@@ -1109,7 +1109,7 @@ acquired_hub_ticks minus target_hub_ticks
 Format:
 
 ```text
-TTL_PULSE_RESULT,sequence,target_hub_ticks,target_galapagos_ticks,generated_hub_ticks,acquired_hub_ticks,generation_error_ns,wire_offset_ns,total_error_ns
+TTL_PULSE_RESULT,sequence,target_hub_ticks,target_ttl_generator_ticks,generated_hub_ticks,acquired_hub_ticks,generation_error_ns,wire_offset_ns,total_error_ns
 ```
 
 The error definitions are:
@@ -1120,11 +1120,11 @@ wire_offset_ns = acquired_hub_ticks minus generated_hub_ticks
 total_error_ns = acquired_hub_ticks minus target_hub_ticks
 ```
 
-Tick differences are converted from the 16 MHz Korora domain into nanoseconds.
+Tick differences are converted from the 16 MHz Hub domain into nanoseconds.
 
 `total_error_ns` is the main end to end scheduled TTL result.
 
-`wire_offset_ns` includes the Galapagos output path, signal rise to the Korora input threshold, Korora input and capture delay, timer reconstruction effects, and remaining Galapagos to Korora clock model error. It is not a pure wire propagation measurement.
+`wire_offset_ns` includes the TTL generator output path, signal rise to the hub input threshold, Hub input and capture delay, timer reconstruction effects, and remaining TTL generator to the hub clock model error. It is not a pure wire propagation measurement.
 
 ## TTL_PULSE_TIMEOUT record
 
@@ -1134,9 +1134,9 @@ Format:
 TTL_PULSE_TIMEOUT,sequence,target_hub_ticks,timeout_hub_ticks,generated_seen,acquired_seen
 ```
 
-`generated_seen` is one when Korora received the Galapagos `TTL_GENERATED` report.
+`generated_seen` is one when Hub received the TTL generator `TTL_GENERATED` report.
 
-`acquired_seen` is one when Korora captured the returned physical rising edge.
+`acquired_seen` is one when Hub captured the returned physical rising edge.
 
 A timeout can therefore distinguish a missing generated report from a missing physical acquisition.
 
@@ -1169,22 +1169,22 @@ The code may contain an operating system or transport error value.
 Format:
 
 ```text
-READY,node,timer_hz,sync_period_ticks,fairy_i2c_address,model_window,max_skew_ppm,galapagos_name,event_pin
+READY,node,timer_hz,sync_period_ticks,node_i2c_address,model_window,max_skew_ppm,ttl_generator_name,event_pin
 ```
 
-The current Korora implementation reports its key runtime configuration in this row.
+The current Hub implementation reports its key runtime configuration in this row.
 
-Korora also reports the scheduled TTL input and test configuration with:
+Hub also reports the scheduled TTL input and test configuration with:
 
 ```text
-TTL_INPUT_READY,korora,pin=44,timer=3,cc=0
+TTL_INPUT_READY,hub,pin=44,timer=3,cc=0
 TTL_TEST_CONFIG,lead_ms=300,period_ms=1000,width_us=100,ttl_input_pin=44
 ```
 
-Galapagos reports the hardware TTL output allocation with:
+TTL generator reports the hardware TTL output allocation with:
 
 ```text
-TTL_OUTPUT_READY,galapagos,pin=44,gpiote_ch=<allocated>,set_grtc_ch=<allocated>,clear_grtc_ch=<allocated>
+TTL_OUTPUT_READY,ttl_generator,pin=44,gpiote_ch=<allocated>,set_grtc_ch=<allocated>,clear_grtc_ch=<allocated>
 ```
 
 GPIOTE and GRTC channel numbers are allocated at runtime and can differ between builds.
@@ -1213,13 +1213,13 @@ The analysis must begin a new segment after each model reset.
 
 ## Event matching rules
 
-Korora captures its own GPIO event and stores it in a bounded cache.
+Hub captures its own GPIO event and stores it in a bounded cache.
 
 A remote GPIO event is converted only when the associated remote model is valid.
 
-Korora chooses the nearest cached reference event inside the configured time window.
+Hub chooses the nearest cached reference event inside the configured time window.
 
-The remote `event_id` and Korora `reference_event_id` remain separate identities.
+The remote `event_id` and the hub `reference_event_id` remain separate identities.
 
 The event error is reported in nanoseconds.
 
@@ -1227,7 +1227,7 @@ The matching process must not reuse queue occupancy, pending count, or transport
 
 ## Serial settings
 
-Korora VCOM0 uses:
+Hub VCOM0 uses:
 
 ```text
 115200 baud
@@ -1246,15 +1246,15 @@ Host timestamp prefixes should remain disabled for logs that will be parsed as t
 
 ## Compatibility
 
-The wire values in the Adelie protocol retain compatibility aliases for older reward terminology.
+The wire values in the Command protocol retain compatibility aliases for older reward terminology.
 
-The public node name for new output is `fairy`.
+The public node name for new output is `node`.
 
 The shared 40 byte frame remains version 2. Record type `TTL_GENERATED` is an additive record type within that frame version. Receivers that do not implement it may discard it but must not interpret it as another record type.
 
 The scheduled TTL command uses its own 20 byte frame with magic `0x544C` and version 1.
 
-The Korora text stream remains version 3 and includes the additive `TTL_PULSE_*` record family.
+The Hub text stream remains version 3 and includes the additive `TTL_PULSE_*` record family.
 
 Any incompatible change to field meaning, length, or ordering requires a version increase.
 
@@ -1264,12 +1264,12 @@ Any incompatible change to field meaning, length, or ordering requires a version
 - Confirm one complete CSV record per line
 - Confirm the parser reports no merged records
 - Confirm all 40 byte frames pass CRC
-- Confirm Fairy and Galapagos reach `TRACK`
+- Confirm node and TTL generator reach `TRACK`
 - Confirm local and remote event IDs are nonzero
 - Confirm every valid match has a positive reference ID
-- Confirm Galapagos event timestamps come from GRTC hardware capture
-- Confirm Galapagos reports `TTL_OUTPUT_READY` on P1.12
-- Confirm Korora reports `TTL_INPUT_READY` on P1.12
+- Confirm TTL generator event timestamps come from GRTC hardware capture
+- Confirm TTL generator reports `TTL_OUTPUT_READY` on P1.12
+- Confirm Hub reports `TTL_INPUT_READY` on P1.12
 - Confirm a scheduled pulse produces scheduled, generated, acquired, and result rows
 - Confirm `TTL_PULSE_RESULT` arithmetic matches the raw timestamps
 - Confirm notification buffers remain valid until completion

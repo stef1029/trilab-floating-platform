@@ -1,0 +1,16 @@
+CompileFlags:
+  CompilationDatabase: build-dk/bridge
+  Remove:
+    - -fno-printf-return-value
+    - -fno-reorder-functions
+    - -mfp16-format=*
+    - -mtp=*
+    - --param=*
+  # Zephyr's GATT macros leave the stack-owned _auto_assigned_handle bitfield
+  # uninitialised on purpose. GCC exempts designated initialisers from
+  # -Wmissing-field-initializers; clang does not, so silence it here only.
+  Add:
+    - -Wno-missing-field-initializers
+    - -IC:/ncs/toolchains/4f5b6ad6dd/opt/zephyr-sdk/gnu/arm-zephyr-eabi/arm-zephyr-eabi/include/c++/14.3.0
+    - -IC:/ncs/toolchains/4f5b6ad6dd/opt/zephyr-sdk/gnu/arm-zephyr-eabi/arm-zephyr-eabi/include/c++/14.3.0/arm-zephyr-eabi
+    - -IC:/ncs/toolchains/4f5b6ad6dd/opt/zephyr-sdk/gnu/arm-zephyr-eabi/arm-zephyr-eabi/include/c++/14.3.0/backward

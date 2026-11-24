@@ -1,0 +1,15 @@
+# PlatformIO writes compile_commands.json at the project root, so clangd
+# finds it without help. Run "../sb <target> index" to regenerate it.
+CompileFlags:
+  # GCC-only flags clang does not recognise.
+  Remove:
+    - -fno-reorder-functions
+    - --param=*
+
+  # The ARM GCC toolchain ships libstdc++; clang looks for libc++ by default
+  # and fails on <cstdint>, <cstdarg> and friends.
+  Add:
+    - -IC:/Users/Stefan Rogers/.platformio/packages/toolchain-gccarmnoneeabi/arm-none-eabi/include/c++/7.2.1
+    - -IC:/Users/Stefan Rogers/.platformio/packages/toolchain-gccarmnoneeabi/arm-none-eabi/include/c++/7.2.1/arm-none-eabi
+    - -IC:/Users/Stefan Rogers/.platformio/packages/toolchain-gccarmnoneeabi/arm-none-eabi/include/c++/7.2.1/backward
+    - -IC:/Users/Stefan Rogers/.platformio/packages/toolchain-gccarmnoneeabi/arm-none-eabi/include

@@ -15,10 +15,10 @@ from .constants import (
     ValueType,
 )
 
-FAIRY_MAGIC = 0xFA13
-FAIRY_VERSION = 3
-FAIRY_HEADER = struct.Struct("<HBBHHIIQIHH")
-FAIRY_HEADER_SIZE = FAIRY_HEADER.size
+RECORD_MAGIC = 0xFA13
+RECORD_VERSION = 3
+RECORD_HEADER = struct.Struct("<HBBHHIIQIHH")
+RECORD_HEADER_SIZE = RECORD_HEADER.size
 
 ADELIE_MAGIC = 0xAD1E
 ADELIE_VERSION = 2
@@ -38,7 +38,7 @@ class Tlv:
 
 
 @dataclass(frozen=True, slots=True)
-class FairyRecord:
+class Record:
     record_type: RecordType | int
     flags: RecordFlag
     record_id: int
@@ -54,7 +54,7 @@ class FairyRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class AdelieMessage:
+class CommandMessage:
     kind: MessageKind
     status: Status
     opcode: Opcode
@@ -165,7 +165,7 @@ def decode_tlvs(payload: bytes) -> tuple[Tlv, ...]:
     return tuple(fields)
 
 
-def encode_adelie(
+def encode_command(
     *,
     kind: MessageKind,
     opcode: Opcode,
@@ -201,9 +201,9 @@ def encode_adelie(
     return bytes(header) + payload
 
 
-def decode_adelie(data: bytes) -> AdelieMessage:
+def decode_command(data: bytes) -> CommandMessage:
     if len(data) < ADELIE_HEADER_SIZE:
-        raise ValueError("short Adelie message")
+        raise ValueError("short command message")
     (
         magic,
         version,
@@ -219,13 +219,13 @@ def decode_adelie(data: bytes) -> AdelieMessage:
         payload_length,
     ) = struct.unpack_from("<HBBBBHHIIQI H".replace(" ", ""), data)
     if magic != ADELIE_MAGIC or version != ADELIE_VERSION:
-        raise ValueError("unsupported Adelie message")
+        raise ValueError("unsupported command message")
     if header_size != ADELIE_HEADER_SIZE:
         raise ValueError("invalid Adelie header size")
     if len(data) != header_size + payload_length:
         raise ValueError("Adelie payload length mismatch")
     payload = data[header_size:]
-    return AdelieMessage(
+    return CommandMessage(
         kind=MessageKind(kind),
         status=Status(status),
         opcode=Opcode(opcode),
@@ -239,9 +239,9 @@ def decode_adelie(data: bytes) -> AdelieMessage:
     )
 
 
-def decode_fairy(data: bytes) -> FairyRecord:
-    if len(data) < FAIRY_HEADER_SIZE:
-        raise ValueError("short Fairy record")
+def decode_record(data: bytes) -> Record:
+    if len(data) < RECORD_HEADER_SIZE:
+        raise ValueError("short record")
     (
         magic,
         version,
@@ -254,19 +254,19 @@ def decode_fairy(data: bytes) -> FairyRecord:
         clock_hz,
         payload_length,
         reserved,
-    ) = FAIRY_HEADER.unpack_from(data)
-    if magic != FAIRY_MAGIC or version != FAIRY_VERSION:
-        raise ValueError("unsupported Fairy record")
-    if header_size != FAIRY_HEADER_SIZE or reserved != 0:
-        raise ValueError("invalid Fairy header")
+    ) = RECORD_HEADER.unpack_from(data)
+    if magic != RECORD_MAGIC or version != RECORD_VERSION:
+        raise ValueError("unsupported record")
+    if header_size != RECORD_HEADER_SIZE or reserved != 0:
+        raise ValueError("invalid node header")
     if len(data) != header_size + payload_length:
-        raise ValueError("Fairy payload length mismatch")
+        raise ValueError("Node payload length mismatch")
     payload = data[header_size:]
     try:
         decoded_type: RecordType | int = RecordType(record_type)
     except ValueError:
         decoded_type = record_type
-    return FairyRecord(
+    return Record(
         record_type=decoded_type,
         flags=RecordFlag(flags),
         record_id=record_id,
@@ -278,7 +278,7 @@ def decode_fairy(data: bytes) -> FairyRecord:
     )
 
 
-def field_value(record: FairyRecord | AdelieMessage, tag: Field | int, default: Any = None) -> Any:
+def field_value(record: Record | CommandMessage, tag: Field | int, default: Any = None) -> Any:
     wanted = int(tag)
     for field in record.fields:
         if field.tag == wanted:
@@ -294,10 +294,10 @@ class ImuPackedSample:
     mag_raw: tuple[int, int, int]
 
 
-def decode_imu_samples(record: FairyRecord) -> tuple[ImuPackedSample, ...]:
-    """Decode a Korora IMU_SAMPLES packed TLV (format v1).
+def decode_imu_samples(record: Record) -> tuple[ImuPackedSample, ...]:
+    """Decode a Hub IMU_SAMPLES packed TLV (format v1).
 
-    The Fairy record timestamp is the first sample timestamp. Every packed
+    The record timestamp is the first sample timestamp. Every packed
     sample begins with a uint32 tick delta relative to that timestamp.
     """
     sample_format = int(field_value(record, Field.SAMPLE_FORMAT, 0))

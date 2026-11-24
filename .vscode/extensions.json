@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "nordic-semiconductor.nrf-connect-extension-pack",
+        "platformio.platformio-ide"
+    ]
+}

@@ -92,37 +92,37 @@ HOST_COUNTERS = (
     "tx_bytes",
     "tx_write_errors",
     "clock_exchange_count",
-    "korora_rs485_errors",
-    "korora_rs485_retries",
-    "korora_rs485_timeouts",
-    "korora_rs485_decode_errors",
-    "korora_rs485_reassembly_errors",
-    "korora_rs485_transmit_errors",
-    "korora_ble_dropped",
-    "galapagos_ttl_generated",
-    "korora_ttl_captured_records",
-    "korora_ttl_capture_edges",
-    "korora_ttl_capture_drops",
+    "hub_rs485_errors",
+    "hub_rs485_retries",
+    "hub_rs485_timeouts",
+    "hub_rs485_decode_errors",
+    "hub_rs485_reassembly_errors",
+    "hub_rs485_transmit_errors",
+    "hub_ble_dropped",
+    "ttl_generator_ttl_generated",
+    "hub_ttl_captured_records",
+    "hub_ttl_capture_edges",
+    "hub_ttl_capture_drops",
 )
 
 
 MIRRORED_HOST_COUNTERS = {
-    "korora_ble_dropped": "dropped_records",
-    "korora_rs485_errors": "transport_errors",
-    "korora_rs485_retries": "retry_count",
-    "korora_rs485_timeouts": "timeout_count",
-    "korora_rs485_decode_errors": "transport_decode_errors",
-    "korora_rs485_reassembly_errors": "transport_reassembly_errors",
-    "korora_rs485_transmit_errors": "transport_transmit_errors",
-    "korora_ttl_capture_edges": "ttl_capture_count",
-    "korora_ttl_capture_drops": "ttl_capture_drops",
+    "hub_ble_dropped": "dropped_records",
+    "hub_rs485_errors": "transport_errors",
+    "hub_rs485_retries": "retry_count",
+    "hub_rs485_timeouts": "timeout_count",
+    "hub_rs485_decode_errors": "transport_decode_errors",
+    "hub_rs485_reassembly_errors": "transport_reassembly_errors",
+    "hub_rs485_transmit_errors": "transport_transmit_errors",
+    "hub_ttl_capture_edges": "ttl_capture_count",
+    "hub_ttl_capture_drops": "ttl_capture_drops",
 }
 
 
 def _preferred_counter_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Remove host copies of counters already present in Korora health."""
+    """Remove host copies of counters already present in the hub health."""
     direct = {
         (str(row["source_node"]), str(row["metric"]))
         for row in rows
@@ -133,10 +133,10 @@ def _preferred_counter_rows(
         metric = str(row["metric"])
         direct_metric = MIRRORED_HOST_COUNTERS.get(
             metric) if node == "adelie_host" else None
-        if direct_metric is not None and ("korora", direct_metric) in direct:
+        if direct_metric is not None and ("hub", direct_metric) in direct:
             continue
         if direct_metric is not None:
-            row = {**row, "source_node": "korora", "metric": direct_metric}
+            row = {**row, "source_node": "hub", "metric": direct_metric}
         output.append(row)
     return output
 
@@ -466,7 +466,7 @@ def _anomaly_rows(
             output.append(
                 {
                     "category": "command_rtt_regime_change",
-                    "source_node": "korora",
+                    "source_node": "hub",
                     "metric": "clock_exchange",
                     "start_s": start,
                     "end_s": start,
@@ -767,21 +767,21 @@ def _command_metrics(rows: list[dict[str, str]]) -> dict[str, Any]:
             _values(rows, "clock_server_processing_us")
         ),
         "clock_network_rtt_us": _summary(_values(rows, "clock_network_rtt_us")),
-        "korora_receive_to_queue_us": _summary(
-            _values(rows, "korora_receive_to_queue_us")
+        "hub_receive_to_queue_us": _summary(
+            _values(rows, "hub_receive_to_queue_us")
         ),
-        "korora_queue_to_tx_start_us": _summary(
-            _values(rows, "korora_queue_to_tx_start_us")
+        "hub_queue_to_tx_start_us": _summary(
+            _values(rows, "hub_queue_to_tx_start_us")
         ),
-        "korora_notify_duration_us": _summary(
-            _values(rows, "korora_notify_duration_us")
+        "hub_notify_duration_us": _summary(
+            _values(rows, "hub_notify_duration_us")
         ),
-        "korora_receive_to_tx_complete_us": _summary(
-            _values(rows, "korora_receive_to_tx_complete_us")
+        "hub_receive_to_tx_complete_us": _summary(
+            _values(rows, "hub_receive_to_tx_complete_us")
         ),
-        "korora_att_mtu": _summary(_values(rows, "korora_att_mtu")),
-        "korora_fragment_count": _summary(
-            _values(rows, "korora_fragment_count")
+        "hub_att_mtu": _summary(_values(rows, "hub_att_mtu")),
+        "hub_fragment_count": _summary(
+            _values(rows, "hub_fragment_count")
         ),
     }
 
@@ -792,27 +792,27 @@ def _latency_diagnosis(rows: list[dict[str, str]]) -> dict[str, Any]:
     write = metrics["gatt_write_duration_us"].get("median")
     after_write = metrics["write_complete_to_response_us"].get("median")
     processing = metrics["clock_server_processing_us"].get("median")
-    korora_total = metrics["korora_receive_to_tx_complete_us"].get("median")
-    korora_receive_queue = metrics["korora_receive_to_queue_us"].get("median")
-    korora_queue_tx = metrics["korora_queue_to_tx_start_us"].get("median")
-    korora_notify = metrics["korora_notify_duration_us"].get("median")
+    hub_total = metrics["hub_receive_to_tx_complete_us"].get("median")
+    hub_receive_queue = metrics["hub_receive_to_queue_us"].get("median")
+    hub_queue_tx = metrics["hub_queue_to_tx_start_us"].get("median")
+    hub_notify = metrics["hub_notify_duration_us"].get("median")
     if rtt is None:
         verdict = "no_response_timing"
         explanation = "No matched command responses contain transport timing."
-    elif korora_total is not None and korora_queue_tx is not None and (
-        korora_queue_tx >= 0.5 * korora_total
+    elif hub_total is not None and hub_queue_tx is not None and (
+        hub_queue_tx >= 0.5 * hub_total
     ):
-        verdict = "korora_response_queue_dominates"
+        verdict = "hub_response_queue_dominates"
         explanation = (
-            "Most measured Korora time is waiting for the BLE transmit worker. "
+            "Most measured Hub time is waiting for the BLE transmit worker. "
             "Inspect an in progress fragmented telemetry message and queue priority."
         )
-    elif korora_total is not None and korora_notify is not None and (
-        korora_notify >= 0.5 * korora_total
+    elif hub_total is not None and hub_notify is not None and (
+        hub_notify >= 0.5 * hub_total
     ):
-        verdict = "korora_notification_dominates"
+        verdict = "hub_notification_dominates"
         explanation = (
-            "Most measured Korora time is submitting and completing BLE notification "
+            "Most measured Hub time is submitting and completing BLE notification "
             "fragments. Check ATT MTU, response fragment count, and connection interval."
         )
     elif write is None:
@@ -828,15 +828,15 @@ def _latency_diagnosis(rows: list[dict[str, str]]) -> dict[str, Any]:
             "BlueZ scheduling, connection parameters, and write acknowledgement latency."
         )
     elif processing is not None and processing >= 0.5 * max(0.0, after_write or 0.0):
-        verdict = "korora_processing_dominates_response_path"
+        verdict = "hub_processing_dominates_response_path"
         explanation = (
-            "Korora command processing accounts for most of the post write response path."
+            "Hub command processing accounts for most of the post write response path."
         )
     else:
         verdict = "response_delivery_path_dominates"
         explanation = (
-            "Most latency occurs after the host GATT write returns and is not Korora clock "
-            "command processing. Inspect Korora outbound queueing and BLE notification delivery."
+            "Most latency occurs after the host GATT write returns and is not Hub clock "
+            "command processing. Inspect Hub outbound queueing and BLE notification delivery."
         )
     return {
         "verdict": verdict,
@@ -844,11 +844,11 @@ def _latency_diagnosis(rows: list[dict[str, str]]) -> dict[str, Any]:
         "median_transport_rtt_us": rtt,
         "median_gatt_write_duration_us": write,
         "median_write_complete_to_response_us": after_write,
-        "median_korora_processing_us": processing,
-        "median_korora_receive_to_tx_complete_us": korora_total,
-        "median_korora_receive_to_queue_us": korora_receive_queue,
-        "median_korora_queue_to_tx_start_us": korora_queue_tx,
-        "median_korora_notify_duration_us": korora_notify,
+        "median_hub_processing_us": processing,
+        "median_hub_receive_to_tx_complete_us": hub_total,
+        "median_hub_receive_to_queue_us": hub_receive_queue,
+        "median_hub_queue_to_tx_start_us": hub_queue_tx,
+        "median_hub_notify_duration_us": hub_notify,
     }
 
 
@@ -954,18 +954,18 @@ def _ttl_results(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         requested = _number(row, "requested_ticks")
         actual = _number(row, "actual_ticks")
         if record_type == "ttl_scheduled":
-            current["target_korora_ticks"] = requested or _number(
+            current["target_hub_ticks"] = requested or _number(
                 row, "timestamp_ticks"
             )
         elif record_type == "ttl_generated":
             current["generated_local_ticks"] = actual or _number(
                 row, "timestamp_ticks"
             )
-            current["generated_korora_ticks"] = _number(
+            current["generated_hub_ticks"] = _number(
                 row, "reference_ticks"
             )
         elif record_type == "ttl_captured":
-            current["captured_korora_ticks"] = actual or _number(
+            current["captured_hub_ticks"] = actual or _number(
                 row, "timestamp_ticks"
             )
         elif record_type == "ttl_result":
@@ -974,9 +974,9 @@ def _ttl_results(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
     output = list(sequences.values())
     for value in output:
-        target = value.get("target_korora_ticks")
-        generated = value.get("generated_korora_ticks")
-        captured = value.get("captured_korora_ticks")
+        target = value.get("target_hub_ticks")
+        generated = value.get("generated_hub_ticks")
+        captured = value.get("captured_hub_ticks")
         if target is not None and generated is not None:
             value["generation_error_ns"] = (generated - target) * 62.5
         if generated is not None and captured is not None:
@@ -1225,7 +1225,7 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         node_summaries[node_name] = {
             "logical_address": address,
             "logical_address_hex": f"0x{address:02x}" if address is not None else "",
-            "fairy_index": identity_row.get("source_fairy_index", ""),
+            "node_index": identity_row.get("source_node_index", ""),
             "label": identity_row.get("source_label", "") or node_name,
             "duration_s": duration_s,
             "record_count": len(records),
@@ -1396,7 +1396,7 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         "node",
         "logical_address",
         "logical_address_hex",
-        "fairy_index",
+        "node_index",
         "label",
         "duration_s",
         "record_count",
@@ -1476,12 +1476,12 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         "gatt_write_median_us",
         "after_write_median_us",
         "network_rtt_median_us",
-        "korora_receive_to_queue_median_us",
-        "korora_queue_to_tx_median_us",
-        "korora_notify_median_us",
-        "korora_receive_to_tx_complete_median_us",
-        "korora_att_mtu_median",
-        "korora_fragment_count_median",
+        "hub_receive_to_queue_median_us",
+        "hub_queue_to_tx_median_us",
+        "hub_notify_median_us",
+        "hub_receive_to_tx_complete_median_us",
+        "hub_att_mtu_median",
+        "hub_fragment_count_median",
     ]
     command_groups = [
         ("overall", "all", _command_metrics(command_rows)),
@@ -1503,10 +1503,10 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             write = metrics["gatt_write_duration_us"]
             after_write = metrics["write_complete_to_response_us"]
             network = metrics["clock_network_rtt_us"]
-            korora_receive_queue = metrics["korora_receive_to_queue_us"]
-            korora_queue_tx = metrics["korora_queue_to_tx_start_us"]
-            korora_notify = metrics["korora_notify_duration_us"]
-            korora_total = metrics["korora_receive_to_tx_complete_us"]
+            hub_receive_queue = metrics["hub_receive_to_queue_us"]
+            hub_queue_tx = metrics["hub_queue_to_tx_start_us"]
+            hub_notify = metrics["hub_notify_duration_us"]
+            hub_total = metrics["hub_receive_to_tx_complete_us"]
             writer.writerow(
                 {
                     "group": group,
@@ -1529,21 +1529,21 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
                     "gatt_write_median_us": write.get("median", ""),
                     "after_write_median_us": after_write.get("median", ""),
                     "network_rtt_median_us": network.get("median", ""),
-                    "korora_receive_to_queue_median_us": korora_receive_queue.get(
+                    "hub_receive_to_queue_median_us": hub_receive_queue.get(
                         "median", ""
                     ),
-                    "korora_queue_to_tx_median_us": korora_queue_tx.get(
+                    "hub_queue_to_tx_median_us": hub_queue_tx.get(
                         "median", ""
                     ),
-                    "korora_notify_median_us": korora_notify.get("median", ""),
-                    "korora_receive_to_tx_complete_median_us": korora_total.get(
+                    "hub_notify_median_us": hub_notify.get("median", ""),
+                    "hub_receive_to_tx_complete_median_us": hub_total.get(
                         "median", ""
                     ),
-                    "korora_att_mtu_median": metrics["korora_att_mtu"].get(
+                    "hub_att_mtu_median": metrics["hub_att_mtu"].get(
                         "median", ""
                     ),
-                    "korora_fragment_count_median": metrics[
-                        "korora_fragment_count"
+                    "hub_fragment_count_median": metrics[
+                        "hub_fragment_count"
                     ].get("median", ""),
                 }
             )
@@ -1575,18 +1575,18 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
     anomaly_counts = Counter(
         str(row["category"]) for row in anomalies
     )
-    korora_drop_bursts = [
+    hub_drop_bursts = [
         row
         for row in anomalies
         if row["category"] == "record_loss_burst"
-        and row["metric"] in {"korora_ble_dropped", "dropped_records"}
-        and row["source_node"] in {"adelie_host", "korora"}
+        and row["metric"] in {"hub_ble_dropped", "dropped_records"}
+        and row["source_node"] in {"adelie_host", "hub"}
     ]
-    if any(row["source_node"] == "adelie_host" for row in korora_drop_bursts):
-        korora_drop_bursts = [
-            row for row in korora_drop_bursts if row["source_node"] == "adelie_host"
+    if any(row["source_node"] == "adelie_host" for row in hub_drop_bursts):
+        hub_drop_bursts = [
+            row for row in hub_drop_bursts if row["source_node"] == "adelie_host"
         ]
-    korora_drop_bursts.sort(key=lambda row: float(row["start_s"]))
+    hub_drop_bursts.sort(key=lambda row: float(row["start_s"]))
     rtt_regime_changes = sorted(
         [
             row
@@ -1596,7 +1596,7 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         key=lambda row: float(row["start_s"]),
     )
     rtt_precursor_leads_s: list[float] = []
-    for burst in korora_drop_bursts:
+    for burst in hub_drop_bursts:
         prior = [
             change
             for change in rtt_regime_changes
@@ -1614,9 +1614,9 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             rtt_precursor_leads_s.append(lead)
     burst_spacing_s = [
         float(later["start_s"]) - float(earlier["start_s"])
-        for earlier, later in zip(korora_drop_bursts, korora_drop_bursts[1:])
+        for earlier, later in zip(hub_drop_bursts, hub_drop_bursts[1:])
     ]
-    burst_starts = [float(row["start_s"]) for row in korora_drop_bursts]
+    burst_starts = [float(row["start_s"]) for row in hub_drop_bursts]
     rollover_phase_tests = {
         "timer_32bit_268_435456_s": {
             "period_s": 268.435456,
@@ -1696,10 +1696,10 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             stage: sum(1 for value in ttl_results if value.get(
                 stage) is not None)
             for stage in (
-                "target_korora_ticks",
+                "target_hub_ticks",
                 "generated_local_ticks",
-                "generated_korora_ticks",
-                "captured_korora_ticks",
+                "generated_hub_ticks",
+                "captured_hub_ticks",
                 "total_error_ns",
             )
         },
@@ -1712,8 +1712,8 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         "anomalies": {
             "count": len(anomalies),
             "counts_by_category": dict(anomaly_counts),
-            "korora_ble_drop_bursts": korora_drop_bursts,
-            "korora_ble_drop_burst_spacing_s": _summary(burst_spacing_s),
+            "hub_ble_drop_bursts": hub_drop_bursts,
+            "hub_ble_drop_burst_spacing_s": _summary(burst_spacing_s),
             "command_rtt_regime_changes": rtt_regime_changes,
             "rtt_increase_to_drop_lead_s": _summary(rtt_precursor_leads_s),
             "rollover_phase_tests": rollover_phase_tests,
@@ -1756,10 +1756,10 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             f"Run duration: {summary['run']['duration_s']:.3f} s",
             f"Parsed records: {summary['run']['record_count']}",
             f"Detected anomaly intervals: {summary['anomalies']['count']}",
-            f"Korora BLE drop bursts: {len(korora_drop_bursts)}",
+            f"Hub BLE drop bursts: {len(hub_drop_bursts)}",
         ]
     )
-    for burst in korora_drop_bursts:
+    for burst in hub_drop_bursts:
         lines.append(
             f"  t={float(burst['start_s']):.3f} to "
             f"{float(burst['end_s']):.3f} s, "
@@ -1809,20 +1809,20 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             f"{command_summary['gatt_write_duration_us'].get('median', math.nan):.3f} us",
             f"Median GATT write completion to response: "
             f"{command_summary['write_complete_to_response_us'].get('median', math.nan):.3f} us",
-            f"Median Korora clock command processing: "
+            f"Median Hub clock command processing: "
             f"{clock_summary['clock_server_processing_us'].get('median', math.nan):.3f} us",
-            f"Median Korora receive to response queue: "
-            f"{clock_summary['korora_receive_to_queue_us'].get('median', math.nan):.3f} us",
-            f"Median Korora response queue wait: "
-            f"{clock_summary['korora_queue_to_tx_start_us'].get('median', math.nan):.3f} us",
-            f"Median Korora notification duration: "
-            f"{clock_summary['korora_notify_duration_us'].get('median', math.nan):.3f} us",
-            f"Median Korora receive to notification completion: "
-            f"{clock_summary['korora_receive_to_tx_complete_us'].get('median', math.nan):.3f} us",
-            f"Median Adelie ATT MTU observed by Korora: "
-            f"{clock_summary['korora_att_mtu'].get('median', math.nan):.0f} bytes",
+            f"Median Hub receive to response queue: "
+            f"{clock_summary['hub_receive_to_queue_us'].get('median', math.nan):.3f} us",
+            f"Median Hub response queue wait: "
+            f"{clock_summary['hub_queue_to_tx_start_us'].get('median', math.nan):.3f} us",
+            f"Median Hub notification duration: "
+            f"{clock_summary['hub_notify_duration_us'].get('median', math.nan):.3f} us",
+            f"Median Hub receive to notification completion: "
+            f"{clock_summary['hub_receive_to_tx_complete_us'].get('median', math.nan):.3f} us",
+            f"Median Adelie ATT MTU observed by the hub: "
+            f"{clock_summary['hub_att_mtu'].get('median', math.nan):.0f} bytes",
             f"Median response fragment count: "
-            f"{clock_summary['korora_fragment_count'].get('median', math.nan):.1f}",
+            f"{clock_summary['hub_fragment_count'].get('median', math.nan):.1f}",
             f"Clock exchange latency diagnosis: {clock_diagnosis['verdict']}",
             f"Clock exchange diagnosis detail: {clock_diagnosis['explanation']}",
             f"Control latency diagnosis: {control_diagnosis['verdict']}",
@@ -1841,17 +1841,17 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
         "## Run coverage",
         "",
         f"The parsed run covers {summary['run']['duration_s']:.3f} seconds and "
-        f"contains {summary['run']['record_count']} Fairy records.",
+        f"contains {summary['run']['record_count']} records.",
         "",
-        "## Korora outbound continuity",
+        "## Hub outbound continuity",
         "",
     ]
-    if korora_drop_bursts:
+    if hub_drop_bursts:
         report_lines.append(
-            f"The analyser found {len(korora_drop_bursts)} Korora BLE outbound "
-            "drop bursts. A rising Korora dropped records counter means the "
+            f"The analyser found {len(hub_drop_bursts)} Hub BLE outbound "
+            "drop bursts. A rising Hub dropped records counter means the "
             "firmware was still executing but could not enqueue another record "
-            "for Adelie or Galapagos. The firmware currently reports the sum of "
+            "for Adelie or TTL generator. The firmware currently reports the sum of "
             "both endpoint drop counters, so this log cannot identify which BLE "
             "connection caused the loss. This is an outbound transport capacity "
             "problem, not by itself evidence of a CPU reset."
@@ -1871,7 +1871,7 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
                 "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
-        for burst in korora_drop_bursts:
+        for burst in hub_drop_bursts:
             report_lines.append(
                 f"| {float(burst['start_s']):.3f} | {float(burst['end_s']):.3f} | "
                 f"{float(burst['duration_s']):.3f} | {float(burst['delta']):.0f} | "
@@ -1881,7 +1881,7 @@ def analyse(parsed_directory: Path, output_directory: Path | None = None) -> dic
             )
     else:
         report_lines.append(
-            "No positive Korora BLE dropped record burst was detected.")
+            "No positive Hub BLE dropped record burst was detected.")
 
     report_lines.extend(
         [

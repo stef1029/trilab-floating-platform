@@ -8,10 +8,10 @@ import threading
 import time
 from typing import Any
 
-from .protocol import AdelieMessage, FairyRecord, Tlv
+from .protocol import CommandMessage, Record, Tlv
 from .transport import Message
 
-LOG_SCHEMA = "fairy_log"
+LOG_SCHEMA = "adelie_log"
 LOG_VERSION = 1
 
 
@@ -29,7 +29,7 @@ def _field_json(field: Tlv) -> dict[str, Any]:
     }
 
 
-def _record_type_name(record: FairyRecord) -> str:
+def _record_type_name(record: Record) -> str:
     if hasattr(record.record_type, "name"):
         return str(record.record_type.name).lower()
     return f"record_0x{int(record.record_type):04x}"
@@ -72,7 +72,7 @@ class LogRecorder:
         *,
         received_monotonic_ns: int,
         transport_message: Message,
-        record: FairyRecord,
+        record: Record,
     ) -> None:
         with self._lock:
             if self._handle is None:
@@ -171,7 +171,7 @@ class LogRecorder:
         *,
         received_monotonic_ns: int,
         transport_message: Message,
-        response: AdelieMessage,
+        response: CommandMessage,
     ) -> None:
         with self._lock:
             if self._handle is None:

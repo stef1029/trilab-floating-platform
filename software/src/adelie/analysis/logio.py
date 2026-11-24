@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from adelie.constants import CommandField, Field
+from adelie.legacy_names import LEGACY_LOG_SCHEMAS, modernise_keys
 
 
 def read_log(path: Path) -> Iterator[dict[str, Any]]:
@@ -14,12 +15,12 @@ def read_log(path: Path) -> Iterator[dict[str, Any]]:
             if not line.strip():
                 continue
             try:
-                item = json.loads(line)
+                item = modernise_keys(json.loads(line))
             except json.JSONDecodeError as error:
                 raise ValueError(f"{path}:{line_number}: malformed JSON: {error}") from error
             if not header_seen:
                 if (
-                    item.get("schema") != "fairy_log"
+                    item.get("schema") not in {"adelie_log", *LEGACY_LOG_SCHEMAS}
                     or item.get("version") != 1
                     or item.get("kind") != "header"
                 ):

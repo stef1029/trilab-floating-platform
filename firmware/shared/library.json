@@ -1,5 +1,5 @@
 {
-	"name": "fairy_shared",
+	"name": "rig_protocol",
 	"version": "3.0.0",
 	"build": {
 		"includeDir": "include",

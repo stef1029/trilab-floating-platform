@@ -85,7 +85,7 @@ Leave both jumpers open on intermediate reward ports. Close them only when this 
 Initial configuration:
 
 - USART1
-- 500000 baud
+- 460800 baud
 - 8 data bits
 - No parity
 - 1 stop bit

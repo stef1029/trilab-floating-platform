@@ -1,42 +1,54 @@
-# Korora Fairy system
+# Floating platform firmware
 
-This project contains contains firmware for one Korora, one Galapagos, and a configurable number of Fairy boards. It also contains the Adelie Python application and the shared wire protocol library.
+This project contains firmware for one hub, one TTL generator, and a configurable number of node boards. It also contains the Adelie Python application and the shared wire protocol library.
 
-The default maximum is six Fairy boards. Change `FAIRY_MAX_BOARDS` in `shared/include/fairy_shared/system_config.hpp` or pass it as a build definition.
+The default maximum is five node boards. Change `RIG_MAX_NODES` in `shared/include/rig_protocol/system_config.hpp` or pass it as a build definition.
 
 ## Naming conventions
 
-| Implementation name | Role                  | Board       |
-| ------------------- | --------------------- | ----------- |
-| Korora              | Floating platform hub | nRF52840    |
-| Fairy               | Reward port           | STM32G071\* |
-| Galapagos           | Static DAQ TTL sync   | nRF54L15    |
+The names match the hex_behav rig (see `hecate/README.md` there). Each
+codename is listed once, here, so old notes and recordings stay readable.
 
-| Protocol name      | Layer       | Use                                                                                             |
-| ------------------ | ----------- | ----------------------------------------------------------------------------------------------- |
-| Fairy protocol     | Application | Defines structure of records that are collected and used for later analysis                     |
-| Adelie protocol    | Application | Defines structure of commands being issued for interaction with peripherals, generating TTLs... |
-| Magellan protocol  | Application | Defines process and structure of assinging logical addresses to fairy boards                    |
-| Transport protocol | Transport   | Defines the structure of frames being sent over various media (UART, BLE)                       |
+| Board             | Role                        | MCU          | Firmware                          | Former codename |
+| ----------------- | --------------------------- | ------------ | --------------------------------- | --------------- |
+| **Hub**           | Floating platform hub       | nRF52840     | [`hub`](hub/)                     | Korora          |
+| **Reward port**   | One per port (a bus *node*) | STM32G071\*  | [`reward_port`](reward_port/)     | Fairy           |
+| **TTL generator** | Static DAQ TTL sync         | nRF54L15     | [`ttl_generator`](ttl_generator/) | Galapagos       |
+
+"Node" means any board on the hub's RS485 bus (here, the reward ports).
+Adelie, the host application, keeps its name.
+
+| Protocol      | Direction / layer                                              | Former codename |
+| ------------- | -------------------------------------------------------------- | --------------- |
+| **Record**    | boards → host: timestamped telemetry and event records         | Fairy           |
+| **Command**   | host → boards: commands and their responses                    | Adelie          |
+| **Discovery** | hub ↔ nodes: finding boards on RS485 and assigning addresses   | Magellan        |
+| **Transport** | frames over UART / RS485 and BLE                               | —               |
+
+The shared C++ library is `rig_protocol` (namespace `rig`), formerly
+`fairy_shared` (namespace `fairy`). The hub advertises over BLE as
+"Floating Hub" and the TTL generator as "TTL Generator" (formerly "korora"
+and "galapagos"), so a hub flashed before the rename will not be found by the
+current Adelie, and vice versa.
 
 ## System structure
 
 ```mermaid
 flowchart TD
-    A["Adelie Python application"] <-->|"BLE transport"| K["Korora nRF52840"]
-    K <-->|"BLE transport"| G["Galapagos nRF54L15"]
-    K <-->|"RS485 transport"| F["Fairy boards"]
+    A["Adelie Python application"] <-->|"BLE transport"| K["Hub nRF52840"]
+    K <-->|"BLE transport"| G["TTL generator nRF54L15"]
+    K <-->|"RS485 transport"| F["Node boards"]
     K -->|"4 Hz SYNC"| F
     G -->|"TTL loopback"| K
 ```
 
-Korora is the time authority and the only RS485 bus master. Galapagos creates scheduled TTL pulses. Fairy boards capture light gate and SYNC edges and drive the local outputs. Adelie assigns board names, sends commands, displays live quality, and writes experiment records.
+The hub is the time authority and the only RS485 bus master. TTL generator creates scheduled TTL pulses. Node boards capture light gate and SYNC edges and drive the local outputs. Adelie assigns board names, sends commands, displays live quality, and writes experiment records.
 
 All machine data uses one of these application protocols:
 
-- Fairy v3 for records
-- Adelie v2 for commands and responses
-- Magellan v1 for discovery and address assignment
+- Record v3 for records
+- Command v2 for commands and responses
+- Discovery v1 for discovery and address assignment
 
 The application messages always use Transport v1 on BLE or RS485. Human debug text is isolated in each `debug_log` module and is never parsed by the system.
 
@@ -45,9 +57,9 @@ The application messages always use Transport v1 on BLE or RS485. Human debug te
 | Folder      | Purpose                                                         |
 | ----------- | --------------------------------------------------------------- |
 | `shared`    | C++ transport, protocol, clock, queue, and byte utilities       |
-| `korora`    | Zephyr firmware for the nRF52840 hub                            |
-| `galapagos` | Zephyr firmware for the nRF54L15 TTL board                      |
-| `fairy`     | STM32Cube and PlatformIO firmware for STM32G071 boards          |
+| `hub`    | Zephyr firmware for the nRF52840 hub                            |
+| `ttl_generator` | Zephyr firmware for the nRF54L15 TTL board                      |
+| `reward_port` | STM32Cube and PlatformIO firmware for STM32G071 boards       |
 | `adelie`    | Python 3.14 control, recording, parsing, analysis, and plotting |
 | `docs`      | Wire protocol specifications and operating rules                |
 
@@ -59,7 +71,7 @@ The application messages always use Transport v1 on BLE or RS485. Human debug te
 | SYNC rate             |                               4 Hz |
 | RS485 baud            |                             460800 |
 | RS485 format          | 8 data bits, no parity, 1 stop bit |
-| Fairy TIM2 rate       |                             16 MHz |
+| Node TIM2 rate       |                             16 MHz |
 | Prototype VLOAD       |                            5000 mV |
 
 One timer tick is 62.5 ns.
@@ -69,20 +81,20 @@ One timer tick is 62.5 ns.
 Use a current Zephyr or nRF Connect SDK workspace for the Nordic firmware.
 
 ```bash
-west build -p always -b nrf52840dk/nrf52840 korora
+west build -p always -b nrf52840dk/nrf52840 hub
 west flash
 ```
 
 ```bash
-west build -p always -b nrf54l15dk/nrf54l15/cpuapp galapagos
+west build -p always -b nrf54l15dk/nrf54l15/cpuapp ttl_generator
 west flash
 ```
 
-Build the prototype Fairy firmware with PlatformIO.
+Build the prototype node firmware with PlatformIO.
 
 ```bash
-pio run -d fairy -e nucleo_g071rb_auto_rs485
-pio run -d fairy -e nucleo_g071rb_auto_rs485 -t upload
+pio run -d reward_port -e nucleo_g071rb_auto_rs485
+pio run -d reward_port -e nucleo_g071rb_auto_rs485 -t upload
 ```
 
 Install Adelie in a Python 3.14 virtual environment.
@@ -96,11 +108,11 @@ adelie
 
 ## Initial setup
 
-1. Power Korora, Galapagos, and all Fairy boards
-2. Start Adelie and connect to Korora
+1. Power Hub, TTL generator, and all node boards
+2. Start Adelie and connect to the hub
 3. Wait for the complete UUID inventory
 4. Use White LED to identify each board
-5. Give each UUID a unique zero based Fairy index
+5. Give each UUID a unique zero based node index
 6. Save the exact configuration
 7. Wait for every clock model to become valid
 8. Choose a new `.log` path
@@ -110,14 +122,14 @@ Adelie applies saved assignments automatically only when the complete discovered
 
 ## Run behavior
 
-Korora starts discovery, health checks, RS485 polling, and SYNC without Adelie. It does not save experiment data.
+Hub starts discovery, health checks, RS485 polling, and SYNC without Adelie. It does not save experiment data.
 
 Record Start creates a session on every board. An unexpected Adelie disconnect ends that session and turns controlled outputs safe. Discovery, SYNC, and health work continue until power is removed.
 
-A Fairy communication timeout or a Galapagos disconnect also ends the complete session. The fault is sent to Adelie before the remaining boards are stopped.
+A node communication timeout or a TTL generator disconnect also ends the complete session. The fault is sent to Adelie before the remaining boards are stopped.
 
 Critical records are always forwarded. Standard mode adds health and clock quality. Full mode adds raw SYNC observations and clock pairs.
 
 ## Safety
 
-The valve starts off and has a hard 250 ms maximum time. It rejects overlap and enforces a minimum interval. RGB, IR, audio, and valve outputs enter safe states on reset and session stop. Audio has a 10 ms onset and offset ramp. The prototype configuration assumes automatic RS485 direction control. Korora and the Nucleo profile do not drive a direction GPIO.
+The valve starts off and has a hard 250 ms maximum time. It rejects overlap and enforces a minimum interval. RGB, IR, audio, and valve outputs enter safe states on reset and session stop. Audio has a 10 ms onset and offset ramp. On the PCBs, Hub and the final node profile drive an RS485 direction pin (DE and /RE tied together) only while transmitting. The DK and Nucleo prototype rig uses automatic direction RS485 modules, and the Nucleo profile drives no direction pin.

@@ -2,31 +2,32 @@ from __future__ import annotations
 
 from enum import IntEnum, IntFlag
 
-KORORA_NAME = "korora"
+# Must equal CONFIG_BT_DEVICE_NAME in firmware/hub/prj.conf.
+HUB_NAME = "Floating Hub"
 
 SERVICE_UUID = "a88279d0-7009-4bee-a6f8-e1dc3ff02b92"
 RX_UUID = "a88279d1-7009-4bee-a6f8-e1dc3ff02b92"
 TX_UUID = "a88279d2-7009-4bee-a6f8-e1dc3ff02b92"
 
-KORORA_ADDRESS = 0x01
-GALAPAGOS_ADDRESS = 0x02
-ADELIE_ADDRESS = 0x03
-FAIRY_ADDRESS_BASE = 0x10
+HUB_ADDRESS = 0x01
+TTL_GENERATOR_ADDRESS = 0x02
+HOST_ADDRESS = 0x03
+NODE_ADDRESS_BASE = 0x10
 DISCOVERY_ADDRESS_BASE = 0x80
 BROADCAST_ADDRESS = 0xFF
 
 COMMON_TIMER_HZ = 16_000_000
-DEFAULT_MAX_FAIRIES = 6
+DEFAULT_MAX_NODES = 5
 
 
-def is_assigned_fairy_address(address: int) -> bool:
-    return FAIRY_ADDRESS_BASE <= address < FAIRY_ADDRESS_BASE + DEFAULT_MAX_FAIRIES
+def is_assigned_node_address(address: int) -> bool:
+    return NODE_ADDRESS_BASE <= address < NODE_ADDRESS_BASE + DEFAULT_MAX_NODES
 
 
 class Channel(IntEnum):
-    FAIRY = 1
-    ADELIE = 2
-    MAGELLAN = 3
+    RECORD = 1
+    COMMAND = 2
+    DISCOVERY = 3
 
 
 class TransportFlag(IntFlag):

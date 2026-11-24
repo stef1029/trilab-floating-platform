@@ -1,11 +1,11 @@
-#include "fairy_shared/transport.hpp"
+#include "rig_protocol/transport.hpp"
 
 #include <cstring>
 
-#include "fairy_shared/bytes.hpp"
-#include "fairy_shared/crc16.hpp"
+#include "rig_protocol/bytes.hpp"
+#include "rig_protocol/crc16.hpp"
 
-namespace fairy::transport {
+namespace rig::transport {
 
 std::size_t encode_frame(const Header &header, const std::uint8_t *payload,
                          std::size_t payload_length, std::uint8_t *destination,
@@ -50,8 +50,8 @@ DecodeResult decode_frame(const std::uint8_t *frame, std::size_t length,
   if (frame[2] != version) {
     return DecodeResult::bad_version;
   }
-  if (frame[3] < static_cast<std::uint8_t>(Channel::fairy) ||
-      frame[3] > static_cast<std::uint8_t>(Channel::magellan)) {
+  if (frame[3] < static_cast<std::uint8_t>(Channel::record) ||
+      frame[3] > static_cast<std::uint8_t>(Channel::discovery)) {
     return DecodeResult::bad_channel;
   }
 
@@ -264,4 +264,4 @@ void Reassembler::reset() {
   active_ = false;
 }
 
-} // namespace fairy::transport
+} // namespace rig::transport

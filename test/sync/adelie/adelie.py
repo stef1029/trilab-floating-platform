@@ -19,7 +19,7 @@ from typing import Iterable
 from bleak import BleakClient, BleakScanner
 
 
-DEVICE_NAME = "korora"
+DEVICE_NAME = "hub"
 
 SERVICE_UUID = "a88279d0-7009-4bee-a6f8-e1dc3ff02b92"
 RX_UUID = "a88279d1-7009-4bee-a6f8-e1dc3ff02b92"
@@ -36,12 +36,12 @@ REWARD_DO_NOW_REQUEST = 0x02
 
 CLOCK_REPLY = 0x81
 
-COMMAND_KORORA_RX = 0x90
+COMMAND_HUB_RX = 0x90
 COMMAND_I2C_TX_START = 0x91
 COMMAND_REWARD_RX = 0x92
 COMMAND_REWARD_EXEC = 0x93
-COMMAND_KORORA_ACK_RX = 0x94
-COMMAND_KORORA_DONE_TX = 0x95
+COMMAND_HUB_ACK_RX = 0x94
+COMMAND_HUB_DONE_TX = 0x95
 
 ERROR = 0xFF
 
@@ -56,13 +56,13 @@ DEFAULT_SYNC_INTERVAL_S = 1.0
 CLOCK_FIELDS = [
     "sequence",
     "t1_adelie_ns",
-    "t2_korora_ticks",
-    "t3_korora_ticks",
+    "t2_hub_ticks",
+    "t3_hub_ticks",
     "t4_adelie_ns",
     "network_rtt_ns",
     "full_exchange_us",
     "midpoint_adelie_ns",
-    "midpoint_korora_ticks",
+    "midpoint_hub_ticks",
 ]
 
 
@@ -78,20 +78,20 @@ COMMAND_FIELDS = [
     "total_rtt_us",
     "ble_down_est_us",
     "ble_up_est_us",
-    "korora_rx_ticks",
+    "hub_rx_ticks",
     "i2c_tx_start_ticks",
     "reward_rx_hub_ticks",
     "reward_exec_hub_ticks",
-    "korora_ack_rx_ticks",
-    "korora_done_tx_ticks",
-    "korora_queue_to_i2c_us",
-    "korora_post_ack_us",
+    "hub_ack_rx_ticks",
+    "hub_done_tx_ticks",
+    "hub_queue_to_i2c_us",
+    "hub_post_ack_us",
     "reward_model_valid",
     "i2c_down_us",
     "reward_action_us",
     "i2c_up_and_poll_us",
-    "korora_reward_rtt_us",
-    "korora_internal_us",
+    "hub_reward_rtt_us",
+    "hub_internal_us",
 ]
 
 
@@ -112,13 +112,13 @@ class Message:
 class ClockSample:
     sequence: int
     t1_adelie_ns: int
-    t2_korora_ticks: int
-    t3_korora_ticks: int
+    t2_hub_ticks: int
+    t3_hub_ticks: int
     t4_adelie_ns: int
     network_rtt_ns: float
     full_exchange_us: float
     midpoint_adelie_ns: float
-    midpoint_korora_ticks: float
+    midpoint_hub_ticks: float
 
 
 @dataclass(frozen=True)
@@ -129,13 +129,13 @@ class ClockModel:
     median_network_rtt_us: float
     minimum_network_rtt_us: float
 
-    def adelie_ns_to_korora_ticks(
+    def adelie_ns_to_hub_ticks(
         self,
         adelie_ns: int | float,
     ) -> float:
         return self.intercept_ticks + self.slope_ticks_per_ns * float(adelie_ns)
 
-    def korora_ticks_to_adelie_ns(
+    def hub_ticks_to_adelie_ns(
         self,
         ticks: int | float,
     ) -> float:
@@ -289,7 +289,7 @@ class Inbox:
 
             elif message.sequence == sequence and message.message_type == ERROR:
                 raise RuntimeError(
-                    f"korora error for sequence {sequence}: status={message.value}"
+                    f"hub error for sequence {sequence}: status={message.value}"
                 )
 
             else:
@@ -374,11 +374,11 @@ def fit_clock_model(
         raise ValueError("at least two clock samples are required")
 
     x_reference = samples[-1].midpoint_adelie_ns
-    y_reference = samples[-1].midpoint_korora_ticks
+    y_reference = samples[-1].midpoint_hub_ticks
 
     x_values = [sample.midpoint_adelie_ns - x_reference for sample in samples]
 
-    y_values = [sample.midpoint_korora_ticks - y_reference for sample in samples]
+    y_values = [sample.midpoint_hub_ticks - y_reference for sample in samples]
 
     x_mean = statistics.fmean(x_values)
     y_mean = statistics.fmean(y_values)
@@ -451,13 +451,13 @@ async def exchange_clock(
     return ClockSample(
         sequence=sequence,
         t1_adelie_ns=t1,
-        t2_korora_ticks=t2,
-        t3_korora_ticks=t3,
+        t2_hub_ticks=t2,
+        t3_hub_ticks=t3,
         t4_adelie_ns=t4,
         network_rtt_ns=network_rtt_ns,
         full_exchange_us=(t4 - t1) / 1_000.0,
         midpoint_adelie_ns=(t1 + t4) / 2.0,
-        midpoint_korora_ticks=(t2 + t3) / 2.0,
+        midpoint_hub_ticks=(t2 + t3) / 2.0,
     )
 
 
@@ -486,12 +486,12 @@ async def run_command(
     )
 
     expected = [
-        COMMAND_KORORA_RX,
+        COMMAND_HUB_RX,
         COMMAND_I2C_TX_START,
         COMMAND_REWARD_RX,
         COMMAND_REWARD_EXEC,
-        COMMAND_KORORA_ACK_RX,
-        COMMAND_KORORA_DONE_TX,
+        COMMAND_HUB_ACK_RX,
+        COMMAND_HUB_DONE_TX,
     ]
 
     replies = await inbox.collect(
@@ -500,11 +500,11 @@ async def run_command(
         timeout,
     )
 
-    done = replies[COMMAND_KORORA_DONE_TX]
+    done = replies[COMMAND_HUB_DONE_TX]
 
     t7 = done.adelie_rx_ns
 
-    korora_rx = replies[COMMAND_KORORA_RX].timestamp
+    hub_rx = replies[COMMAND_HUB_RX].timestamp
 
     i2c_start = replies[COMMAND_I2C_TX_START].timestamp
 
@@ -512,9 +512,9 @@ async def run_command(
 
     reward_exec = replies[COMMAND_REWARD_EXEC].timestamp
 
-    korora_ack = replies[COMMAND_KORORA_ACK_RX].timestamp
+    hub_ack = replies[COMMAND_HUB_ACK_RX].timestamp
 
-    korora_done = done.timestamp
+    hub_done = done.timestamp
 
     reward_model_valid = (
         replies[COMMAND_REWARD_RX].value == STATUS_OK
@@ -523,9 +523,9 @@ async def run_command(
         and reward_exec != 0
     )
 
-    t1_hub = model.adelie_ns_to_korora_ticks(t1)
+    t1_hub = model.adelie_ns_to_hub_ticks(t1)
 
-    t7_hub = model.adelie_ns_to_korora_ticks(t7)
+    t7_hub = model.adelie_ns_to_hub_ticks(t7)
 
     tick_to_us = 1_000_000.0 / HUB_HZ
 
@@ -539,16 +539,16 @@ async def run_command(
         "adelie_t1_ns": t1,
         "adelie_t7_ns": t7,
         "total_rtt_us": (t7 - t1) / 1_000.0,
-        "ble_down_est_us": (korora_rx - t1_hub) * tick_to_us,
-        "ble_up_est_us": (t7_hub - korora_done) * tick_to_us,
-        "korora_rx_ticks": korora_rx,
+        "ble_down_est_us": (hub_rx - t1_hub) * tick_to_us,
+        "ble_up_est_us": (t7_hub - hub_done) * tick_to_us,
+        "hub_rx_ticks": hub_rx,
         "i2c_tx_start_ticks": i2c_start,
         "reward_rx_hub_ticks": reward_rx,
         "reward_exec_hub_ticks": reward_exec,
-        "korora_ack_rx_ticks": korora_ack,
-        "korora_done_tx_ticks": korora_done,
-        "korora_queue_to_i2c_us": (i2c_start - korora_rx) * tick_to_us,
-        "korora_post_ack_us": (korora_done - korora_ack) * tick_to_us,
+        "hub_ack_rx_ticks": hub_ack,
+        "hub_done_tx_ticks": hub_done,
+        "hub_queue_to_i2c_us": (i2c_start - hub_rx) * tick_to_us,
+        "hub_post_ack_us": (hub_done - hub_ack) * tick_to_us,
         "reward_model_valid": int(reward_model_valid),
     }
 
@@ -557,9 +557,9 @@ async def run_command(
             {
                 "i2c_down_us": (reward_rx - i2c_start) * tick_to_us,
                 "reward_action_us": (reward_exec - reward_rx) * tick_to_us,
-                "i2c_up_and_poll_us": (korora_ack - reward_exec) * tick_to_us,
-                "korora_reward_rtt_us": (korora_ack - i2c_start) * tick_to_us,
-                "korora_internal_us": (korora_done - korora_rx) * tick_to_us,
+                "i2c_up_and_poll_us": (hub_ack - reward_exec) * tick_to_us,
+                "hub_reward_rtt_us": (hub_ack - i2c_start) * tick_to_us,
+                "hub_internal_us": (hub_done - hub_rx) * tick_to_us,
             }
         )
     else:
@@ -568,8 +568,8 @@ async def run_command(
                 "i2c_down_us": math.nan,
                 "reward_action_us": math.nan,
                 "i2c_up_and_poll_us": math.nan,
-                "korora_reward_rtt_us": math.nan,
-                "korora_internal_us": (korora_done - korora_rx) * tick_to_us,
+                "hub_reward_rtt_us": math.nan,
+                "hub_internal_us": (hub_done - hub_rx) * tick_to_us,
             }
         )
 
@@ -882,7 +882,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Maintain a rolling "
-            "Adelie-to-Korora clock model "
+            "Adelie-to-Hub clock model "
             "and measure reward_port "
             "command latency."
         )
