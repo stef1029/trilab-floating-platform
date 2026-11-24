@@ -84,14 +84,14 @@ case UART_TX_ABORTED:
 ```
 
 Note *where* DE is dropped — inside the callback, in interrupt context, not
-back in the thread that called `uart_tx`. A Fairy may answer the instant it
+back in the thread that called `uart_tx`. A node may answer the instant it
 sees the line idle. If DE stayed high until the scheduler got round to
 waking the sending thread, we would still be driving while it replied.
 
-`firmware/korora/src/rs485_bus.cpp` does precisely this, with the same
+`firmware/hub/src/rs485_bus.cpp` does precisely this, with the same
 comment.
 
-### The Fairy: the `TC` flag
+### The node: the `TC` flag
 
 The STM32 has no async API here, but it does not need one, because
 `HAL_UART_Transmit` is blocking *and waits on the right flag*:
@@ -123,7 +123,7 @@ set_rs485_transmit(true);
 busy_wait_us(1);           /* let DE settle before the first start bit */
 ```
 
-The 40 µs is not arbitrary — it is what `firmware/fairy/src/rs485_link.cpp`
+The 40 µs is not arbitrary — it is what `firmware/reward_port/src/rs485_link.cpp`
 uses. A transceiver takes time to stop driving after DE falls, and starting
 to drive into that tail corrupts both frames.
 
@@ -137,7 +137,7 @@ Erring long here costs a few microseconds. Erring short costs a frame.
 One change in the bridge that is easy to miss:
 
 ```cpp
-static uint8_t encoded[fairy::transport::max_encoded_uart_frame];
+static uint8_t encoded[rig::transport::max_encoded_uart_frame];
 ```
 
 It used to be a stack local, and with `uart_poll_out` that was fine — every
@@ -149,7 +149,7 @@ long dead, and you would transmit whatever the next function call left
 there — a bug that produces *occasional* corruption depending on timing,
 which is the worst kind.
 
-File scope is safe here only because one thread transmits. The real Korora
+File scope is safe here only because one thread transmits. The real Hub
 has the same constraint and solves it the same way, with a single RS485
 manager thread owning the buffer.
 
@@ -192,8 +192,8 @@ PCB has an explicit DE line.
 
 ```sh
 ./sb bridge485 build  &&  ./sb bridge485 flash
-./sb fairy485  build  &&  ./sb fairy485  flash
-python host/fairy_led.py
+./sb node485  build  &&  ./sb node485  flash
+python host/node_led.py
 ```
 
 Same host script as module 03 — the PC cannot tell the difference, which is
@@ -208,7 +208,7 @@ Failure modes, and what they mean:
 
 | Symptom | Cause |
 | --- | --- |
-| Command works, no response | Fairy's DE stuck high, or never asserted |
+| Command works, no response | Node's DE stuck high, or never asserted |
 | bad frame, `result=7` (bad CRC) | truncated frame — DE dropped too early |
 | Garbage bytes when idle | no idle biasing on the bus |
 | Works slow, fails at 460800 | auto-direction transceiver, or no termination |
@@ -218,6 +218,6 @@ Failure modes, and what they mean:
 
 ## Next
 
-**05 — Adelie v2**: replace the two-byte `[opcode, value]` payload with real
+**05 — Command v2**: replace the two-byte `[opcode, value]` payload with real
 TLV records, so the sandbox speaks the actual application protocol rather
 than a stand-in.

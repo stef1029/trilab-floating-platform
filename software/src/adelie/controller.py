@@ -11,14 +11,14 @@ from typing import Any
 from .ble_link import BleLink
 from .config import BoardAssignment, RigConfig, normalize_uuid
 from .constants import (
-    ADELIE_ADDRESS,
+    HOST_ADDRESS,
     Channel,
     CommandField,
     CommandFlag,
-    FAIRY_ADDRESS_BASE,
+    NODE_ADDRESS_BASE,
     Field,
-    GALAPAGOS_ADDRESS,
-    KORORA_ADDRESS,
+    TTL_GENERATOR_ADDRESS,
+    HUB_ADDRESS,
     MessageKind,
     Opcode,
     RecordType,
@@ -26,6 +26,7 @@ from .constants import (
     TelemetryLevel,
     ValueType,
 )
+from .health import NodeState, node_state
 from .models import (
     ClockExchange,
     HostClockModel,
@@ -35,12 +36,12 @@ from .models import (
     TtlStats,
 )
 from .protocol import (
-    AdelieMessage,
-    FairyRecord,
-    decode_adelie,
-    decode_fairy,
+    CommandMessage,
+    Record,
+    decode_command,
+    decode_record,
     decode_imu_samples,
-    encode_adelie,
+    encode_command,
 )
 from .recorder import LogRecorder
 from .transport import Message
@@ -57,8 +58,8 @@ class AdelieController:
         self.clock = HostClockModel()
         self.inventory: dict[str, InventoryEntry] = {}
         self.nodes: dict[int, NodeStats] = {
-            KORORA_ADDRESS: NodeStats(KORORA_ADDRESS, "korora"),
-            GALAPAGOS_ADDRESS: NodeStats(GALAPAGOS_ADDRESS, "galapagos"),
+            HUB_ADDRESS: NodeStats(HUB_ADDRESS, "hub"),
+            TTL_GENERATOR_ADDRESS: NodeStats(TTL_GENERATOR_ADDRESS, "ttl_generator"),
         }
         self.session_id = 0
         self.local_sensors = LocalSensorState()
@@ -94,13 +95,14 @@ class AdelieController:
         if not self.connected or not self.inventory_applied:
             return False
         required = [
-            FAIRY_ADDRESS_BASE + assignment.fairy_number
+            NODE_ADDRESS_BASE + assignment.node_number
             for assignment in self.config.assignments
         ]
-        return self.nodes[GALAPAGOS_ADDRESS].synchronized and all(
-            self.nodes.get(address) is not None
-            and self.nodes[address].synchronized
-            for address in required
+        # node_state() also requires a recent record, because the
+        # synchronized flag is sticky once a board has gone quiet.
+        return all(
+            node_state(self.nodes.get(address)) is NodeState.READY
+            for address in [TTL_GENERATOR_ADDRESS, *required]
         )
 
     def disconnect(self) -> None:
@@ -117,7 +119,7 @@ class AdelieController:
         self,
         opcode: Opcode,
         *,
-        destination: int = KORORA_ADDRESS,
+        destination: int = HUB_ADDRESS,
         fields: list[tuple[int, ValueType, Any]] | None = None,
         execute_at_ticks: int = 0,
         flags: CommandFlag = CommandFlag.REQUIRE_RESPONSE,
@@ -125,11 +127,11 @@ class AdelieController:
     ) -> int:
         if not self.connected:
             self.on_event(
-                "warning", "command ignored because Korora is disconnected")
+                "warning", "command ignored because Hub is disconnected")
             return 0
         command_id = self._next_command_id()
         command_fields = fields or []
-        payload = encode_adelie(
+        payload = encode_command(
             kind=MessageKind.COMMAND,
             opcode=opcode,
             command_id=command_id,
@@ -141,7 +143,7 @@ class AdelieController:
         )
         queued_ns = time.perf_counter_ns()
         transfer_id = self.link.send(
-            channel=Channel.ADELIE,
+            channel=Channel.COMMAND,
             destination=destination,
             payload=payload,
         )
@@ -210,13 +212,13 @@ class AdelieController:
 
     def start_recording(self, path: Path) -> None:
         if not self.connected:
-            raise RuntimeError("Korora is not connected")
+            raise RuntimeError("Hub is not connected")
         if not self.inventory_applied:
             raise RuntimeError(
                 "the complete UUID set must be configured first")
         if not self.ready_to_record:
             raise RuntimeError(
-                "wait for every Fairy and Galapagos clock model")
+                "wait for every node and TTL generator clock model")
         self.session_id = random.randint(1, 0xFFFF_FFFE)
         self.local_sensors.raw_chunks_received = 0
         self.local_sensors.raw_samples_received = 0
@@ -225,11 +227,11 @@ class AdelieController:
             path,
             self.session_id,
             {
-                "protocol": {"transport": 1, "fairy": 3, "adelie": 2, "magellan": 1},
+                "protocol": {"transport": 1, "record": 3, "command": 2, "discovery": 1},
                 "assignments": [
                     {
                         "uuid": item.uuid,
-                        "fairy_number": item.fairy_number,
+                        "node_number": item.node_number,
                         "label": item.label,
                     }
                     for item in self.config.assignments
@@ -355,14 +357,17 @@ class AdelieController:
             Opcode.ACTUATE_VALVE,
             destination=address,
             flags=CommandFlag.REQUIRE_RESPONSE
-            | CommandFlag.EXECUTE_IMMEDIATELY
-            | CommandFlag.SAFETY_AUTHORIZED,
+            | CommandFlag.EXECUTE_IMMEDIATELY,
             fields=[
                 (CommandField.DURATION_MS, ValueType.U32, duration_ms),
             ],
         )
 
     def configure_valves(self) -> None:
+        for assignment in self.config.assignments:
+            self.configure_valve(NODE_ADDRESS_BASE + assignment.node_number)
+
+    def configure_valve(self, address: int) -> None:
         sensible_defaults = [
             (CommandField.VLOAD_MILLIVOLTS, ValueType.U32, 5000),
             (CommandField.SPIKE_DURATION_US, ValueType.U32, 12_000),
@@ -371,12 +376,11 @@ class AdelieController:
             (CommandField.MAX_ON_TIME_US, ValueType.U32, 250_000),
             (CommandField.MINIMUM_INTERVAL_US, ValueType.U32, 250_000),
         ]
-        for assignment in self.config.assignments:
-            self.command(
-                Opcode.CONFIGURE_VALVE,
-                destination=FAIRY_ADDRESS_BASE + assignment.fairy_number,
-                fields=sensible_defaults,
-            )
+        self.command(
+            Opcode.CONFIGURE_VALVE,
+            destination=address,
+            fields=sensible_defaults,
+        )
 
     def clock_exchange(self) -> None:
         if not self.connected:
@@ -405,29 +409,29 @@ class AdelieController:
             if state in {"disconnected", "error", "stopped"}:
                 self.connected = False
                 self.local_sensors = LocalSensorState()
-                self.nodes[KORORA_ADDRESS].connected = False
+                self.nodes[HUB_ADDRESS].connected = False
                 self.inventory_applied = False
                 self._inventory_apply_command = None
                 self._end_run(f"BLE {state}")
             if state == "connected":
-                self.nodes[KORORA_ADDRESS].connected = True
+                self.nodes[HUB_ADDRESS].connected = True
                 self.request_inventory()
                 self.set_telemetry(self.telemetry_level)
         self.on_event("connection", {"state": state, "detail": detail})
 
     def _on_message(self, message: Message, received_ns: int) -> None:
         try:
-            if message.channel is Channel.FAIRY:
-                record = decode_fairy(message.payload)
+            if message.channel is Channel.RECORD:
+                record = decode_record(message.payload)
                 self._handle_record(message, record, received_ns)
-            elif message.channel is Channel.ADELIE:
-                response = decode_adelie(message.payload)
+            elif message.channel is Channel.COMMAND:
+                response = decode_command(message.payload)
                 self._handle_response(message, response, received_ns)
         except Exception as error:
             self.on_event("warning", f"dropped application message: {error}")
 
     def _handle_record(
-        self, message: Message, record: FairyRecord, received_ns: int
+        self, message: Message, record: Record, received_ns: int
     ) -> None:
         address = self._node_aliases.get(message.source, message.source)
         stats = self.nodes.setdefault(
@@ -568,7 +572,7 @@ class AdelieController:
         self.on_event("local_sensors", sensors)
 
     def _update_imu_samples(
-        self, record: FairyRecord, fields: dict[int, Any], received_ns: int
+        self, record: Record, fields: dict[int, Any], received_ns: int
     ) -> None:
         samples = decode_imu_samples(record)
         sensors = self.local_sensors
@@ -611,7 +615,7 @@ class AdelieController:
         self.on_event("local_sensors", sensors)
 
     def _update_ttl(
-        self, record: FairyRecord, fields: dict[int, Any], received_ns: int
+        self, record: Record, fields: dict[int, Any], received_ns: int
     ) -> None:
         sequence_value = fields.get(int(Field.SEQUENCE))
         if sequence_value is None:
@@ -627,7 +631,7 @@ class AdelieController:
         requested = fields.get(int(Field.REQUESTED_TICKS))
         actual = fields.get(int(Field.ACTUAL_TICKS))
         if record.record_type is RecordType.TTL_SCHEDULED:
-            ttl.target_korora_ticks = int(
+            ttl.target_hub_ticks = int(
                 requested if requested is not None else record.timestamp_ticks
             )
         elif record.record_type is RecordType.TTL_GENERATED:
@@ -638,40 +642,40 @@ class AdelieController:
             )
             reference = fields.get(int(Field.REFERENCE_TICKS))
             if reference is not None:
-                ttl.generated_korora_ticks = int(reference)
-            self.nodes[GALAPAGOS_ADDRESS].note_ttl(sequence, received_ns)
+                ttl.generated_hub_ticks = int(reference)
+            self.nodes[TTL_GENERATOR_ADDRESS].note_ttl(sequence, received_ns)
         elif record.record_type is RecordType.TTL_CAPTURED:
             if requested is not None:
-                ttl.target_korora_ticks = int(requested)
-            ttl.captured_korora_ticks = int(
+                ttl.target_hub_ticks = int(requested)
+            ttl.captured_hub_ticks = int(
                 actual if actual is not None else record.timestamp_ticks
             )
-            self.nodes[KORORA_ADDRESS].note_ttl(sequence, received_ns)
+            self.nodes[HUB_ADDRESS].note_ttl(sequence, received_ns)
         elif record.record_type is RecordType.TTL_RESULT:
             if requested is not None:
-                ttl.target_korora_ticks = int(requested)
+                ttl.target_hub_ticks = int(requested)
             if actual is not None:
-                ttl.captured_korora_ticks = int(actual)
+                ttl.captured_hub_ticks = int(actual)
             result_ns = fields.get(int(Field.VALUE))
             if result_ns is not None:
                 ttl.result_error_us = float(result_ns) / 1000.0
 
         ttl.recompute()
-        galapagos = self.nodes[GALAPAGOS_ADDRESS]
+        ttl_generator = self.nodes[TTL_GENERATOR_ADDRESS]
         if ttl.output_error_us == ttl.output_error_us:
-            galapagos.last_ttl_sequence = sequence
-            galapagos.last_ttl_error_us = ttl.output_error_us
-            galapagos.last_ttl_ns = received_ns
-        korora = self.nodes[KORORA_ADDRESS]
+            ttl_generator.last_ttl_sequence = sequence
+            ttl_generator.last_ttl_error_us = ttl.output_error_us
+            ttl_generator.last_ttl_ns = received_ns
+        hub = self.nodes[HUB_ADDRESS]
         input_error = (
             ttl.result_error_us
             if ttl.result_error_us == ttl.result_error_us
             else ttl.input_error_us
         )
         if input_error == input_error:
-            korora.last_ttl_sequence = sequence
-            korora.last_ttl_error_us = input_error
-            korora.last_ttl_ns = received_ns
+            hub.last_ttl_sequence = sequence
+            hub.last_ttl_error_us = input_error
+            hub.last_ttl_ns = received_ns
 
         self.on_event("ttl", replace(ttl))
         while len(self._ttl_sequences) > 64:
@@ -681,7 +685,7 @@ class AdelieController:
         now_ns = time.perf_counter_ns()
         link = self.link.diagnostics()
         clock = self.clock.quality
-        korora = self.nodes[KORORA_ADDRESS]
+        hub = self.nodes[HUB_ADDRESS]
         values: dict[str, Any] = {
             "sample_ns": now_ns,
             "ble_connected": link.connected,
@@ -717,21 +721,21 @@ class AdelieController:
             "clock_exchange_count": self._clock_exchange_count,
             "clock_last_exchange_ns": self._last_clock_exchange_ns,
             "clock_last_rtt_us": self._last_clock_exchange_rtt_us,
-            # This counter comes from korora_rs485::errors(), not the host BLE
+            # This counter comes from hub_rs485::errors(), not the host BLE
             # link. Keeping it explicitly named prevents misleading diagnosis.
-            "korora_rs485_errors": korora.transport_errors,
-            "korora_rs485_retries": korora.retries,
-            "korora_rs485_timeouts": korora.timeout_count,
-            "korora_rs485_decode_errors": korora.decode_errors,
-            "korora_rs485_reassembly_errors": korora.reassembly_errors,
-            "korora_rs485_transmit_errors": korora.transmit_errors,
-            "korora_ble_dropped": korora.dropped_records,
-            "galapagos_ttl_generated": self.nodes[
-                GALAPAGOS_ADDRESS
+            "hub_rs485_errors": hub.transport_errors,
+            "hub_rs485_retries": hub.retries,
+            "hub_rs485_timeouts": hub.timeout_count,
+            "hub_rs485_decode_errors": hub.decode_errors,
+            "hub_rs485_reassembly_errors": hub.reassembly_errors,
+            "hub_rs485_transmit_errors": hub.transmit_errors,
+            "hub_ble_dropped": hub.dropped_records,
+            "ttl_generator_ttl_generated": self.nodes[
+                TTL_GENERATOR_ADDRESS
             ].ttl_events,
-            "korora_ttl_captured_records": korora.ttl_events,
-            "korora_ttl_capture_edges": korora.ttl_capture_count,
-            "korora_ttl_capture_drops": korora.ttl_capture_drops,
+            "hub_ttl_captured_records": hub.ttl_events,
+            "hub_ttl_capture_edges": hub.ttl_capture_count,
+            "hub_ttl_capture_drops": hub.ttl_capture_drops,
         }
         if (
             self.recorder.active
@@ -742,7 +746,7 @@ class AdelieController:
         return values
 
     def _handle_response(
-        self, message: Message, response: AdelieMessage, received_ns: int
+        self, message: Message, response: CommandMessage, received_ns: int
     ) -> None:
         self.recorder.command_response(
             received_monotonic_ns=received_ns,
@@ -776,6 +780,7 @@ class AdelieController:
             self.inventory_applied = response.status is Status.OK
             self.on_event("inventory_applied", self.inventory_applied)
             if self.inventory_applied:
+                self.configure_valves()
                 self.request_inventory()
         elif (
             response.opcode is Opcode.START_SESSION
@@ -797,7 +802,7 @@ class AdelieController:
             {"source": message.source, "response": response},
         )
 
-    def _decode_inventory_response(self, response: AdelieMessage) -> None:
+    def _decode_inventory_response(self, response: CommandMessage) -> None:
         raw = next(
             (
                 field.value
@@ -831,7 +836,7 @@ class AdelieController:
             },
         )
 
-    def _update_inventory_record(self, record: FairyRecord) -> None:
+    def _update_inventory_record(self, record: Record) -> None:
         fields = record.field_map
         raw_uuid = fields.get(int(Field.UUID))
         address = fields.get(int(Field.LINK_ADDRESS))
@@ -842,7 +847,7 @@ class AdelieController:
                 self.inventory_applied = False
                 self._inventory_apply_command = None
                 if self.session_id:
-                    self._request_stop("Fairy inventory changed")
+                    self._request_stop("Node inventory changed")
                 self.on_event(
                     "inventory",
                     {
@@ -858,7 +863,7 @@ class AdelieController:
                 capabilities=int(fields.get(int(Field.VALUE), 0)),
             )
             if self.session_id and not self.config.exact_match(self.inventory):
-                self._request_stop("Fairy inventory changed")
+                self._request_stop("Node inventory changed")
             self._apply_inventory_if_exact()
             self.on_event(
                 "inventory",
@@ -877,14 +882,14 @@ class AdelieController:
             self._inventory_apply_command = None
             return
 
-        # Discovery addresses such as 0x80 are temporary Magellan routes. Map
-        # records that are still in flight onto their saved Fairy address and
+        # Discovery addresses such as 0x80 are temporary Discovery routes. Map
+        # records that are still in flight onto their saved node address and
         # remove the temporary statistics object instead of showing two cards
         # for one physical board.
         for assignment in self.config.assignments:
             entry = self.inventory[normalize_uuid(assignment.uuid)]
-            address = FAIRY_ADDRESS_BASE + assignment.fairy_number
-            name = assignment.label or f"fairy{assignment.fairy_number}"
+            address = NODE_ADDRESS_BASE + assignment.node_number
+            name = assignment.label or f"node{assignment.node_number}"
             if entry.address != address:
                 self._node_aliases[entry.address] = address
                 temporary = self.nodes.pop(entry.address, None)
@@ -907,11 +912,11 @@ class AdelieController:
 
         packed = bytearray()
         for assignment in sorted(
-            self.config.assignments, key=lambda item: item.fairy_number
+            self.config.assignments, key=lambda item: item.node_number
         ):
             entry = self.inventory[normalize_uuid(assignment.uuid)]
             packed += bytes.fromhex(entry.uuid)
-            packed += bytes((assignment.fairy_number,))
+            packed += bytes((assignment.node_number,))
 
         self._inventory_apply_command = self.command(
             Opcode.APPLY_INVENTORY,

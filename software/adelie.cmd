@@ -59,7 +59,9 @@ exit /b 0
 :help
 echo usage: %~nx0 [setup ^| ^<adelie arguments^>]
 echo.
-echo   %~nx0                  launch the Adelie GUI
+echo   %~nx0                  launch the Adelie GUI (last used mode)
+echo   %~nx0 --simple         launch in Simple mode
+echo   %~nx0 --dev            launch in Developer mode
 echo   %~nx0 setup            create .venv and install the package
 echo.
 echo Other entry points live beside adelie.exe in .venv\Scripts\ :

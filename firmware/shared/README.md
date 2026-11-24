@@ -1,6 +1,6 @@
 # Shared C++ library
 
-The shared folder contains code used by Korora, Galapagos, and Fairy. It has no heap requirement and does not depend on Zephyr or STM32 HAL.
+The shared folder contains code used by the hub, TTL generator, and node. It has no heap requirement and does not depend on Zephyr or STM32 HAL.
 
 ## Modules
 
@@ -12,25 +12,25 @@ The shared folder contains code used by Korora, Galapagos, and Fairy. It has no 
 | `static_queue.hpp`      | Fixed capacity queue                               |
 | `transport.hpp`         | Transport framing, COBS, and reassembly            |
 | `tlv.hpp`               | Flexible typed fields                              |
-| `fairy_protocol.hpp`    | Fairy v3 record codec                              |
-| `adelie_protocol.hpp`   | Adelie v2 command codec                            |
-| `magellan_protocol.hpp` | Discovery and assignment codec                     |
+| `record_protocol.hpp`    | Record v3 record codec                              |
+| `command_protocol.hpp`   | Command v2 command codec                            |
+| `discovery_protocol.hpp` | Discovery and assignment codec                     |
 | `clock_model.hpp`       | Fixed window affine clock model                    |
 
 ## Configuration
 
-The main build values are at the top of `include/fairy_shared/system_config.hpp`.
+The main build values are at the top of `include/rig_protocol/system_config.hpp`.
 
 ```cpp
-#define FAIRY_MAX_BOARDS 6
-#define FAIRY_ENABLE_DEBUG_STREAM 1
+#define RIG_MAX_NODES 5
+#define NODE_ENABLE_DEBUG_STREAM 1
 ```
 
-They can also be supplied as compiler definitions. The wire format allows at most 14 Fairies in one inventory response. This project defaults to six.
+They can also be supplied as compiler definitions. The wire format allows at most 14 Nodes in one inventory response. This project defaults to five.
 
 ## PlatformIO
 
-`library.json` lets the Fairy project include this folder through `lib_deps`.
+`library.json` lets the node project include this folder through `lib_deps`.
 
 ## Host tests
 
@@ -39,9 +39,9 @@ The test builds the protocol code with the host C++ compiler and checks:
 - Transport encode and decode
 - COBS framing
 - Fragment reassembly
-- Fairy record round trip
+- record round trip
 - Adelie command round trip
-- Magellan UUID assignment
+- Discovery UUID assignment
 - Clock model fit and inverse conversion
 
 Run:

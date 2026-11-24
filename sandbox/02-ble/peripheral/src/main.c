@@ -1,10 +1,10 @@
 /*
- * Minimal BLE peripheral: a stripped-down Adelie <-> Korora link.
+ * Minimal BLE peripheral: a stripped-down Host <-> Hub link.
  *
  *   host writes 1 byte  ->  LED1 on/off        (the "command" direction)
  *   BUTTON1 pressed     ->  notify 1 byte      (the "record" direction)
  *
- * Real Korora wraps both directions in the Transport v1 framing (header,
+ * Real Hub wraps both directions in the Transport v1 framing (header,
  * CRC16, fragmentation). Here the payload IS the whole message, so you can
  * see the BLE plumbing without the protocol on top.
  */
@@ -16,7 +16,7 @@
 
 /* ------------------------------------------------------------------ UUIDs --
  * A custom 128-bit service. These are just random numbers -- the only rule
- * is that both ends agree. Deliberately NOT Korora's a88279d0-... so the two
+ * is that both ends agree. Deliberately NOT Hub's a88279d0-... so the two
  * can never be confused on air.
  */
 #define SANDBOX_SERVICE_UUID \

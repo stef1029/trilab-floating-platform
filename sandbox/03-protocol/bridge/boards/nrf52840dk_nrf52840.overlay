@@ -1,7 +1,7 @@
 #include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 /*
- * Link to the Fairy. Same pins the real Korora prototype uses:
+ * Link to the node. Same pins the real Hub prototype uses:
  *   P0.27 -> TX   (to Nucleo PC5 / D0)
  *   P0.26 <- RX   (from Nucleo PC4 / D1)
  */

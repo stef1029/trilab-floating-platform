@@ -13,8 +13,8 @@ DEFAULT_HUB_HZ = 16_000_000.0
 DEFAULT_LOCAL_HZ = 16_000_000.0
 DEFAULT_SYNC_RATE_HZ = 4.0
 DEFAULT_WINDOW_SIZE = 16
-REFERENCE_NODE = "korora"
-NODE_ALIASES = {"reward_port": "fairy"}
+REFERENCE_NODE = "hub"
+NODE_ALIASES = {"reward_port": "node"}
 TRACK_STATES = {"TRACK", "LOCAL"}
 
 
@@ -270,7 +270,7 @@ def derive_events(events: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
     events["event_id_raw"] = events["event_id"]
     events["reference_event_id_raw"] = events["reference_event_id"]
 
-    # In Korora stream data, event_id == 0 on an unmatched remote GPIO event means
+    # In Hub stream data, event_id == 0 on an unmatched remote GPIO event means
     # that no real event identifier was available. It must not be treated as the
     # first real event.
     missing_remote_event_id = (
@@ -347,13 +347,13 @@ def derive_events(events: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
 
     events["reference_time_ticks"] = np.nan
 
-    # A matched remote GPIO event is positioned using its Korora reference
+    # A matched remote GPIO event is positioned using its Hub reference
     # capture.  This keeps all matched nodes on the same event timeline.
     events.loc[valid_reference_time, "reference_time_ticks"] = events.loc[
         valid_reference_time, "reference_hub_ticks"
     ]
 
-    # Korora LOCAL events and converted-but-not-matched TRACK events still have
+    # Hub LOCAL events and converted-but-not-matched TRACK events still have
     # a meaningful hub-domain time.  They may be used for non-error plots.
     converted_without_reference = valid_converted_time & ~valid_reference_time
     events.loc[converted_without_reference, "reference_time_ticks"] = events.loc[
@@ -682,43 +682,43 @@ def derive_adelie_clock(clock: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
         [
             "sequence",
             "t1_adelie_ns",
-            "t2_korora_ticks",
-            "t3_korora_ticks",
+            "t2_hub_ticks",
+            "t3_hub_ticks",
             "t4_adelie_ns",
             "network_rtt_ns",
             "full_exchange_us",
             "midpoint_adelie_ns",
-            "midpoint_korora_ticks",
+            "midpoint_hub_ticks",
         ],
     )
     if clock.empty:
         return clock
 
     clock = clock.dropna(
-        subset=["t1_adelie_ns", "t2_korora_ticks", "t4_adelie_ns"]
+        subset=["t1_adelie_ns", "t2_hub_ticks", "t4_adelie_ns"]
     ).copy()
     clock = clock.sort_values(
         ["t1_adelie_ns", "sequence"]).reset_index(drop=True)
 
-    if "t3_korora_ticks" not in clock or clock["t3_korora_ticks"].isna().all():
-        clock["t3_korora_ticks"] = clock["t2_korora_ticks"]
+    if "t3_hub_ticks" not in clock or clock["t3_hub_ticks"].isna().all():
+        clock["t3_hub_ticks"] = clock["t2_hub_ticks"]
     if "midpoint_adelie_ns" not in clock or clock["midpoint_adelie_ns"].isna().all():
         clock["midpoint_adelie_ns"] = (
             clock["t1_adelie_ns"] + clock["t4_adelie_ns"]
         ) / 2.0
     if (
-        "midpoint_korora_ticks" not in clock
-        or clock["midpoint_korora_ticks"].isna().all()
+        "midpoint_hub_ticks" not in clock
+        or clock["midpoint_hub_ticks"].isna().all()
     ):
-        clock["midpoint_korora_ticks"] = (
-            clock["t2_korora_ticks"] + clock["t3_korora_ticks"]
+        clock["midpoint_hub_ticks"] = (
+            clock["t2_hub_ticks"] + clock["t3_hub_ticks"]
         ) / 2.0
 
     clock["elapsed_s"] = (
         clock["midpoint_adelie_ns"] - float(clock["midpoint_adelie_ns"].min())
     ) / 1e9
     clock["server_processing_ticks"] = (
-        clock["t3_korora_ticks"] - clock["t2_korora_ticks"]
+        clock["t3_hub_ticks"] - clock["t2_hub_ticks"]
     )
     clock["server_processing_us"] = clock["server_processing_ticks"] / hub_hz * 1e6
     clock["full_exchange_recomputed_us"] = (
@@ -731,7 +731,7 @@ def derive_adelie_clock(clock: pd.DataFrame, hub_hz: float) -> pd.DataFrame:
         - clock.loc[missing_network, "server_processing_us"]
     )
     clock["sample_offset_ticks"] = (
-        clock["midpoint_korora_ticks"] -
+        clock["midpoint_hub_ticks"] -
         (hub_hz / 1e9) * clock["midpoint_adelie_ns"]
     )
 
@@ -752,7 +752,7 @@ def calculate_adelie_rolling_fits(
     for end in range(window_size - 1, len(clock)):
         window = clock.iloc[end - window_size + 1: end + 1]
         local = window["midpoint_adelie_ns"].to_numpy(dtype=np.float64)
-        hub = window["midpoint_korora_ticks"].to_numpy(dtype=np.float64)
+        hub = window["midpoint_hub_ticks"].to_numpy(dtype=np.float64)
 
         try:
             slope, intercept, residual_ticks = fit_affine(local, hub)
@@ -767,7 +767,7 @@ def calculate_adelie_rolling_fits(
             try:
                 previous_slope, previous_intercept, _ = fit_affine(
                     training["midpoint_adelie_ns"].to_numpy(dtype=np.float64),
-                    training["midpoint_korora_ticks"].to_numpy(
+                    training["midpoint_hub_ticks"].to_numpy(
                         dtype=np.float64),
                 )
                 predicted = previous_intercept + previous_slope * float(
@@ -775,7 +775,7 @@ def calculate_adelie_rolling_fits(
                 )
                 prediction_error_us = (
                     (float(clock.iloc[end]
-                     ["midpoint_korora_ticks"]) - predicted)
+                     ["midpoint_hub_ticks"]) - predicted)
                     / hub_hz
                     * 1e6
                 )
@@ -821,11 +821,11 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
 
     commands = commands.rename(
         columns={
-            "reward_rx_hub_ticks": "fairy_rx_hub_ticks",
-            "reward_exec_hub_ticks": "fairy_exec_hub_ticks",
-            "reward_model_valid": "fairy_model_valid",
-            "reward_action_us": "fairy_action_us",
-            "korora_reward_rtt_us": "korora_fairy_rtt_us",
+            "reward_rx_hub_ticks": "node_rx_hub_ticks",
+            "reward_exec_hub_ticks": "node_exec_hub_ticks",
+            "reward_model_valid": "node_model_valid",
+            "reward_action_us": "node_action_us",
+            "hub_reward_rtt_us": "hub_node_rtt_us",
         }
     )
 
@@ -843,20 +843,20 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
             "total_rtt_us",
             "ble_down_est_us",
             "ble_up_est_us",
-            "korora_rx_ticks",
+            "hub_rx_ticks",
             "i2c_tx_start_ticks",
-            "fairy_rx_hub_ticks",
-            "fairy_exec_hub_ticks",
-            "korora_ack_rx_ticks",
-            "korora_done_tx_ticks",
-            "korora_queue_to_i2c_us",
-            "korora_post_ack_us",
-            "fairy_model_valid",
+            "node_rx_hub_ticks",
+            "node_exec_hub_ticks",
+            "hub_ack_rx_ticks",
+            "hub_done_tx_ticks",
+            "hub_queue_to_i2c_us",
+            "hub_post_ack_us",
+            "node_model_valid",
             "i2c_down_us",
-            "fairy_action_us",
+            "node_action_us",
             "i2c_up_and_poll_us",
-            "korora_fairy_rtt_us",
-            "korora_internal_us",
+            "hub_node_rtt_us",
+            "hub_internal_us",
         ],
     )
 
@@ -871,30 +871,30 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
         ) / 1000.0
 
     recomputed = {
-        "korora_queue_to_i2c_us": (
-            commands["i2c_tx_start_ticks"] - commands["korora_rx_ticks"]
+        "hub_queue_to_i2c_us": (
+            commands["i2c_tx_start_ticks"] - commands["hub_rx_ticks"]
         )
         * tick_to_us,
-        "korora_post_ack_us": (
-            commands["korora_done_tx_ticks"] - commands["korora_ack_rx_ticks"]
+        "hub_post_ack_us": (
+            commands["hub_done_tx_ticks"] - commands["hub_ack_rx_ticks"]
         )
         * tick_to_us,
-        "i2c_down_us": (commands["fairy_rx_hub_ticks"] - commands["i2c_tx_start_ticks"])
+        "i2c_down_us": (commands["node_rx_hub_ticks"] - commands["i2c_tx_start_ticks"])
         * tick_to_us,
-        "fairy_action_us": (
-            commands["fairy_exec_hub_ticks"] - commands["fairy_rx_hub_ticks"]
+        "node_action_us": (
+            commands["node_exec_hub_ticks"] - commands["node_rx_hub_ticks"]
         )
         * tick_to_us,
         "i2c_up_and_poll_us": (
-            commands["korora_ack_rx_ticks"] - commands["fairy_exec_hub_ticks"]
+            commands["hub_ack_rx_ticks"] - commands["node_exec_hub_ticks"]
         )
         * tick_to_us,
-        "korora_fairy_rtt_us": (
-            commands["korora_ack_rx_ticks"] - commands["i2c_tx_start_ticks"]
+        "hub_node_rtt_us": (
+            commands["hub_ack_rx_ticks"] - commands["i2c_tx_start_ticks"]
         )
         * tick_to_us,
-        "korora_internal_us": (
-            commands["korora_done_tx_ticks"] - commands["korora_rx_ticks"]
+        "hub_internal_us": (
+            commands["hub_done_tx_ticks"] - commands["hub_rx_ticks"]
         )
         * tick_to_us,
     }
@@ -919,19 +919,19 @@ def derive_adelie_commands(commands: pd.DataFrame, hub_hz: float) -> pd.DataFram
         commands["ble_down_est_us"] - commands["ble_up_est_us"]
     )
     commands["host_and_ble_unaccounted_us"] = (
-        commands["total_rtt_us"] - commands["korora_internal_us"]
+        commands["total_rtt_us"] - commands["hub_internal_us"]
     )
     commands["timeline_sum_us"] = (
         commands["ble_down_est_us"]
-        + commands["korora_internal_us"]
+        + commands["hub_internal_us"]
         + commands["ble_up_est_us"]
     )
     commands["timeline_closure_us"] = (
         commands["total_rtt_us"] - commands["timeline_sum_us"]
     )
-    commands["fairy_path_sum_us"] = (
+    commands["node_path_sum_us"] = (
         commands["i2c_down_us"]
-        + commands["fairy_action_us"]
+        + commands["node_action_us"]
         + commands["i2c_up_and_poll_us"]
     )
 
@@ -948,13 +948,13 @@ def create_adelie_command_events(commands: pd.DataFrame, hub_hz: float) -> pd.Da
     for command in commands.itertuples(index=False):
         sequence = int(command.sequence)
         t1_hub = (
-            float(command.korora_rx_ticks)
+            float(command.hub_rx_ticks)
             - float(command.ble_down_est_us) * tick_per_us
             if pd.notna(command.ble_down_est_us)
             else math.nan
         )
         t7_hub = (
-            float(command.korora_done_tx_ticks)
+            float(command.hub_done_tx_ticks)
             + float(command.ble_up_est_us) * tick_per_us
             if pd.notna(command.ble_up_est_us)
             else math.nan
@@ -963,15 +963,15 @@ def create_adelie_command_events(commands: pd.DataFrame, hub_hz: float) -> pd.Da
         stages = [
             ("adelie", "COMMAND_TX", command.adelie_t1_ns, 1e9, t1_hub, "TRACK"),
             (
-                "korora",
+                "hub",
                 "COMMAND_RX",
-                command.korora_rx_ticks,
+                command.hub_rx_ticks,
                 hub_hz,
-                command.korora_rx_ticks,
+                command.hub_rx_ticks,
                 "LOCAL",
             ),
             (
-                "korora",
+                "hub",
                 "COMMAND_FORWARD",
                 command.i2c_tx_start_ticks,
                 hub_hz,
@@ -979,35 +979,35 @@ def create_adelie_command_events(commands: pd.DataFrame, hub_hz: float) -> pd.Da
                 "LOCAL",
             ),
             (
-                "fairy",
+                "node",
                 "COMMAND_RX",
                 math.nan,
                 hub_hz,
-                command.fairy_rx_hub_ticks,
+                command.node_rx_hub_ticks,
                 "TRACK",
             ),
             (
-                "fairy",
+                "node",
                 "COMMAND_EXEC",
                 math.nan,
                 hub_hz,
-                command.fairy_exec_hub_ticks,
+                command.node_exec_hub_ticks,
                 "TRACK",
             ),
             (
-                "korora",
+                "hub",
                 "COMMAND_ACK_RX",
-                command.korora_ack_rx_ticks,
+                command.hub_ack_rx_ticks,
                 hub_hz,
-                command.korora_ack_rx_ticks,
+                command.hub_ack_rx_ticks,
                 "LOCAL",
             ),
             (
-                "korora",
+                "hub",
                 "COMMAND_RESULT_TX",
-                command.korora_done_tx_ticks,
+                command.hub_done_tx_ticks,
                 hub_hz,
-                command.korora_done_tx_ticks,
+                command.hub_done_tx_ticks,
                 "LOCAL",
             ),
             ("adelie", "COMMAND_RESULT_RX",
@@ -1074,13 +1074,13 @@ def create_event_alignment(events: pd.DataFrame) -> pd.DataFrame:
 
     alignment = pd.concat(pivoted, axis=1).reset_index()
 
-    if {"error_us_fairy", "error_us_galapagos"}.issubset(alignment.columns):
-        alignment["galapagos_minus_fairy_error_us"] = (
-            alignment["error_us_galapagos"] - alignment["error_us_fairy"]
+    if {"error_us_node", "error_us_ttl_generator"}.issubset(alignment.columns):
+        alignment["ttl_generator_minus_node_error_us"] = (
+            alignment["error_us_ttl_generator"] - alignment["error_us_node"]
         )
-    if {"hub_ticks_fairy", "hub_ticks_galapagos"}.issubset(alignment.columns):
-        alignment["galapagos_minus_fairy_hub_ticks"] = (
-            alignment["hub_ticks_galapagos"] - alignment["hub_ticks_fairy"]
+    if {"hub_ticks_node", "hub_ticks_ttl_generator"}.issubset(alignment.columns):
+        alignment["ttl_generator_minus_node_hub_ticks"] = (
+            alignment["hub_ticks_ttl_generator"] - alignment["hub_ticks_node"]
         )
 
     return alignment.sort_values("reference_event_id").reset_index(drop=True)
@@ -1139,7 +1139,7 @@ def create_node_summary(
 
         row: dict[str, Any] = {
             "node": node,
-            "source_type": "korora_stream",
+            "source_type": "hub_stream",
             "pair_count": len(node_pairs),
             "sync_count": len(node_sync),
             "rolling_fit_count": len(node_rolling),
@@ -1255,7 +1255,7 @@ def create_ttl_report_section(ttl_pulses: pd.DataFrame) -> pd.DataFrame:
         "report_section": "scheduled_ttl",
         "node": "",
         "source_type": "scheduled_ttl_test",
-        "path": "galapagos_to_korora",
+        "path": "ttl_generator_to_hub",
         "ttl_test_count": int(len(ttl_pulses)),
         "ttl_result_count": int(ttl_pulses["completed"].sum()),
         "ttl_timeout_count": int(ttl_pulses["timed_out"].sum()),
@@ -1359,22 +1359,22 @@ def create_adelie_summary(
             "total_rtt_us": "command_total_rtt_us",
             "ble_down_est_us": "command_ble_down_est_us",
             "ble_up_est_us": "command_ble_up_est_us",
-            "korora_internal_us": "command_korora_internal_us",
-            "korora_queue_to_i2c_us": "command_korora_queue_to_i2c_us",
+            "hub_internal_us": "command_hub_internal_us",
+            "hub_queue_to_i2c_us": "command_hub_queue_to_i2c_us",
             "i2c_down_us": "command_i2c_down_us",
-            "fairy_action_us": "command_fairy_action_us",
+            "node_action_us": "command_node_action_us",
             "i2c_up_and_poll_us": "command_i2c_up_and_poll_us",
-            "korora_post_ack_us": "command_korora_post_ack_us",
+            "hub_post_ack_us": "command_hub_post_ack_us",
             "host_and_ble_unaccounted_us": "command_host_and_ble_us",
             "ble_direction_difference_us": "command_ble_direction_difference_us",
             "timeline_closure_us": "command_timeline_closure_us",
         }.items():
             if column in commands:
                 row.update(describe(commands[column], prefix))
-        if "fairy_model_valid" in commands:
+        if "node_model_valid" in commands:
             valid = pd.to_numeric(
-                commands["fairy_model_valid"], errors="coerce")
-            row["fairy_model_valid_fraction"] = float((valid == 1).mean())
+                commands["node_model_valid"], errors="coerce")
+            row["node_model_valid_fraction"] = float((valid == 1).mean())
 
     return pd.DataFrame([row])
 
@@ -1450,15 +1450,15 @@ def print_summary(summary: pd.DataFrame) -> str:
         "command_total_rtt_us_p95",
         "command_ble_down_est_us_median",
         "command_ble_up_est_us_median",
-        "command_korora_internal_us_median",
+        "command_hub_internal_us_median",
         "command_i2c_down_us_median",
-        "command_fairy_action_us_median",
+        "command_node_action_us_median",
         "command_i2c_up_and_poll_us_median",
         "command_host_and_ble_us_median",
     ]
 
     lines.append("=" * 72)
-    lines.append("Korora synchronization and scheduled TTL analysis")
+    lines.append("Hub synchronization and scheduled TTL analysis")
     lines.append("=" * 72)
 
     for _, row in summary.iterrows():
@@ -1468,7 +1468,7 @@ def print_summary(summary: pd.DataFrame) -> str:
         if report_section == "scheduled_ttl" or source_type == "scheduled_ttl_test":
             lines.append("")
             lines.append("=" * 72)
-            lines.append("Scheduled TTL path: Galapagos to Korora")
+            lines.append("Scheduled TTL path: TTL generator to the hub")
             lines.append("=" * 72)
             for key in ttl_order:
                 if key not in row or pd.isna(row[key]):
@@ -1487,7 +1487,7 @@ def print_summary(summary: pd.DataFrame) -> str:
                 f"reference_event_count                         : {int(row.get('reference_event_count', 0))}"
             )
             lines.append(
-                "Korora is the reference clock; zero-error fit statistics are omitted."
+                "Hub is the reference clock; zero-error fit statistics are omitted."
             )
             continue
 
@@ -1595,7 +1595,7 @@ def analyse_directory(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Analyse normalized Korora and Adelie data."
+        description="Analyse normalized Hub and Adelie data."
     )
     parser.add_argument("--input", type=Path, default=Path("parsed"))
     parser.add_argument("--output", type=Path, default=Path("analysis"))
@@ -1622,7 +1622,7 @@ def main() -> None:
         window_size=args.window,
     )
     if summary.empty:
-        raise SystemExit("No analysable Korora or Adelie data found")
+        raise SystemExit("No analysable Hub or Adelie data found")
     print(f"Results written to: {args.output}")
 
 

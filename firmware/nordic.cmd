@@ -1,14 +1,14 @@
 @echo off
 REM Build, flash or recover the Nordic (Zephyr) firmware from cmd.exe.
 REM
-REM   nordic korora                 build for the BMD-340 module / hub PCB
-REM   nordic korora dk              build for the nRF52840 DK breadboard rig
-REM   nordic galapagos              build for the nRF54L15 DK
+REM   nordic hub                 build for the BMD-340 module / hub PCB
+REM   nordic hub dk              build for the nRF52840 DK breadboard rig
+REM   nordic ttl_generator              build for the nRF54L15 DK
 REM
-REM   nordic korora flash           flash the hub PCB through the DK's Debug Out
-REM   nordic korora recover         unlock (mass erase!) and flash the hub PCB
-REM   nordic korora dk flash        flash the DK itself over USB
-REM   nordic galapagos flash
+REM   nordic hub flash           flash the hub PCB through the DK's Debug Out
+REM   nordic hub recover         unlock (mass erase!) and flash the hub PCB
+REM   nordic hub dk flash        flash the DK itself over USB
+REM   nordic ttl_generator flash
 REM
 REM The hub PCB has no USB debugger of its own.  It is reached over SWD from
 REM the nRF52840 DK's "Debug out" header, which retargets the DK's on-board
@@ -39,7 +39,7 @@ if /i "%ARG2%"=="recover" ( set "VARIANT=" & set "ACTION=recover" )
 if "%ACTION%"=="" set "ACTION=build"
 
 REM ---- board, build directory, and how the probe reaches the chip ----
-if /i "%APP%"=="korora" (
+if /i "%APP%"=="hub" (
   if /i "%VARIANT%"=="dk" (
     set "BOARD=nrf52840dk/nrf52840"
     set "BUILD=build-dk"
@@ -49,7 +49,7 @@ if /i "%APP%"=="korora" (
     set "BUILD=build-bmd340eval"
     set "PROBE=--dev-id %DK_SERIAL%"
   )
-) else if /i "%APP%"=="galapagos" (
+) else if /i "%APP%"=="ttl_generator" (
   set "BOARD=nrf54l15dk/nrf54l15/cpuapp"
   set "BUILD=build-dk"
   set "PROBE="
@@ -79,5 +79,5 @@ echo Building %APP% for %BOARD%  -^>  %APP%\%BUILD%   (NCS %NCS_VERSION%)
 exit /b %ERRORLEVEL%
 
 :usage
-echo usage: nordic {korora ^[dk^] ^| galapagos} ^[flash ^| recover^] 1>&2
+echo usage: nordic {hub ^[dk^] ^| ttl_generator} ^[flash ^| recover^] 1>&2
 exit /b 2

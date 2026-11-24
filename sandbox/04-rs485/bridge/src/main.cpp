@@ -1,7 +1,7 @@
 /*
- * Sandbox "Korora": a BLE <-> UART bridge speaking real Transport v1.
+ * Sandbox "Hub": a BLE <-> UART bridge speaking real Transport v1.
  *
- *   PC --BLE--> THIS BOARD --USART1 460800--> fairy-lite --> LED
+ *   PC --BLE--> THIS BOARD --USART1 460800--> node-lite --> LED
  *
  * The PC writes a complete Transport v1 frame to the RX characteristic.
  * This board decodes it, checks the destination, and forwards it down the
@@ -9,7 +9,7 @@
  * notified to the PC.
  *
  * Framing uses firmware/shared, the same library the production firmware
- * and fairy-lite use -- so the bytes on both links are genuinely the real
+ * and node-lite use -- so the bytes on both links are genuinely the real
  * protocol, not a lookalike.
  *
  * Module 04 puts an RS485 transceiver on each end. The bus is half duplex:
@@ -26,8 +26,8 @@
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 
-#include "fairy_shared/system_config.hpp"
-#include "fairy_shared/transport.hpp"
+#include "rig_protocol/system_config.hpp"
+#include "rig_protocol/transport.hpp"
 
 namespace {
 
@@ -58,13 +58,13 @@ uint8_t receive_buffers[2][64];
 uint8_t next_receive_buffer;
 bt_conn *current_conn;
 
-/* UART ISR -> thread handoff. A message queue rather than Fairy's hand-rolled
+/* UART ISR -> thread handoff. A message queue rather than node's hand-rolled
  * ring, because here there IS a scheduler to hand off to. */
 K_MSGQ_DEFINE(link_bytes, sizeof(uint8_t), 1024, 1);
 
-fairy::transport::UartDecoder decoder;
-uint32_t to_fairy;
-uint32_t from_fairy;
+rig::transport::UartDecoder decoder;
+uint32_t to_node;
+uint32_t from_node;
 uint32_t bad_frames;
 
 /* ------------------------------------------------------------ UART side --*/
@@ -108,7 +108,7 @@ void link_event(const device *dev, uart_event *event, void *)
 		 * release it HERE, in interrupt context, rather than waking
 		 * the sending thread and letting it do the job.
 		 *
-		 * Why: a Fairy may answer the instant it sees the line idle.
+		 * Why: a node may answer the instant it sees the line idle.
 		 * If DE stayed high until the scheduler got round to us, we
 		 * would still be driving the bus while it replied, and two
 		 * transmitters would be fighting over the same pair.
@@ -131,13 +131,13 @@ void link_send(const uint8_t *raw, size_t raw_length)
 	 * returned would be transmitted as whatever landed there next.
 	 *
 	 * File scope is safe here only because one thread transmits. The real
-	 * Korora has the same constraint and solves it the same way, with a
+	 * Hub has the same constraint and solves it the same way, with a
 	 * single RS485 manager thread owning the buffer.
 	 */
-	static uint8_t encoded[fairy::transport::max_encoded_uart_frame];
+	static uint8_t encoded[rig::transport::max_encoded_uart_frame];
 
 	const size_t encoded_length =
-		fairy::transport::cobs_encode(raw, raw_length, encoded, sizeof(encoded));
+		rig::transport::cobs_encode(raw, raw_length, encoded, sizeof(encoded));
 	if (encoded_length == 0U) {
 		return;
 	}
@@ -147,7 +147,7 @@ void link_send(const uint8_t *raw, size_t raw_length)
 	/*
 	 * Turnaround guard. The far end only stopped driving a moment ago and
 	 * a transceiver takes time to let go. Driving too early collides with
-	 * the tail of somebody else's frame. The real Fairy waits 40 us here
+	 * the tail of somebody else's frame. The real node waits 40 us here
 	 * for exactly this reason.
 	 */
 	k_busy_wait(40);
@@ -168,7 +168,7 @@ void link_send(const uint8_t *raw, size_t raw_length)
 		(void)k_sem_take(&transmit_complete, K_MSEC(20));
 		return;
 	}
-	++to_fairy;
+	++to_node;
 }
 
 /* ------------------------------------------------------------- BLE side --*/
@@ -182,10 +182,10 @@ ssize_t rx_write(bt_conn *conn, const bt_gatt_attr *attr, const void *buf,
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
 
-	fairy::transport::FrameView frame;
-	const auto result = fairy::transport::decode_frame(
+	rig::transport::FrameView frame;
+	const auto result = rig::transport::decode_frame(
 		static_cast<const uint8_t *>(buf), len, frame);
-	if (result != fairy::transport::DecodeResult::ok) {
+	if (result != rig::transport::DecodeResult::ok) {
 		printk("BLE_RX bad frame (result=%u len=%u)\n",
 		       static_cast<unsigned>(result), len);
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
@@ -259,26 +259,26 @@ void link_thread(void *, void *, void *)
 	while (true) {
 		k_msgq_get(&link_bytes, &byte, K_FOREVER);   /* blocks, costs nothing */
 
-		fairy::transport::FrameView frame;
+		rig::transport::FrameView frame;
 		const auto result = decoder.push(byte, frame);
-		if (result == fairy::transport::DecodeResult::incomplete) {
+		if (result == rig::transport::DecodeResult::incomplete) {
 			continue;
 		}
-		if (result != fairy::transport::DecodeResult::ok) {
+		if (result != rig::transport::DecodeResult::ok) {
 			++bad_frames;
 			printk("UART bad frame (result=%u bad=%u)\n",
 			       static_cast<unsigned>(result), bad_frames);
 			continue;
 		}
 
-		++from_fairy;
+		++from_node;
 		printk("UART->BLE src=0x%02x transfer=%u payload=%u\n",
 		       frame.header.source, frame.header.transfer_id,
 		       static_cast<unsigned>(frame.payload_length));
 
 		/* Re-encode the decoded frame and notify it to the PC. */
-		uint8_t raw[fairy::transport::max_raw_frame_size]{};
-		const size_t raw_length = fairy::transport::encode_frame(
+		uint8_t raw[rig::transport::max_raw_frame_size]{};
+		const size_t raw_length = rig::transport::encode_frame(
 			frame.header, frame.payload, frame.payload_length,
 			raw, sizeof(raw));
 		if (raw_length != 0U && current_conn != nullptr) {
@@ -332,7 +332,7 @@ int main(void)
 	}
 
 	printk("bridge advertising as \"%s\"\n", CONFIG_BT_DEVICE_NAME);
-	printk("  RS485 460800, P0.27=DI P0.26=RO P1.12=DE -> fairy at 0x%02x\n",
-	       fairy::config::fairy_address(0));
+	printk("  RS485 460800, P0.27=DI P0.26=RO P1.12=DE -> node at 0x%02x\n",
+	       rig::config::node_address(0));
 	return 0;
 }

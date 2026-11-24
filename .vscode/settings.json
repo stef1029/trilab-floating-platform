@@ -1,7 +1,7 @@
 {
 	"nrf-connect.applications": [
-		"${workspaceFolder}/firmware/korora",
-		"${workspaceFolder}/firmware/galapagos",
+		"${workspaceFolder}/firmware/hub",
+		"${workspaceFolder}/firmware/ttl_generator",
 		"${workspaceFolder}/sandbox/01-blink/nordic",
 		"${workspaceFolder}/sandbox/02-ble/peripheral",
 		"${workspaceFolder}/sandbox/03-protocol/bridge",

@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from adelie.constants import (
-    ADELIE_ADDRESS,
+    HOST_ADDRESS,
     COMMON_TIMER_HZ,
-    FAIRY_ADDRESS_BASE,
-    GALAPAGOS_ADDRESS,
-    KORORA_ADDRESS,
+    NODE_ADDRESS_BASE,
+    TTL_GENERATOR_ADDRESS,
+    HUB_ADDRESS,
     Opcode,
     Status,
 )
@@ -27,11 +27,11 @@ NODE_COLUMNS = [
     "source_address",
     "source_node",
     "source_label",
-    "source_fairy_index",
+    "source_node_index",
     "destination_address",
     "destination_node",
     "destination_label",
-    "destination_fairy_index",
+    "destination_node_index",
 ]
 
 
@@ -167,7 +167,7 @@ COMMAND_COLUMNS = [
     "destination_address",
     "destination_node",
     "destination_label",
-    "destination_fairy_index",
+    "destination_node_index",
     "queued_monotonic_ns",
     "sent_monotonic_ns",
     "write_completed_monotonic_ns",
@@ -180,7 +180,7 @@ COMMAND_COLUMNS = [
     "response_source_address",
     "response_source_node",
     "response_source_label",
-    "response_source_fairy_index",
+    "response_source_node_index",
     "status",
     "status_value",
     "response_missing",
@@ -197,17 +197,17 @@ COMMAND_COLUMNS = [
     "clock_full_exchange_us",
     "clock_server_processing_us",
     "clock_network_rtt_us",
-    "korora_receive_ticks",
-    "korora_response_queued_ticks",
-    "korora_tx_start_ticks",
-    "korora_tx_complete_ticks",
-    "korora_receive_to_queue_us",
-    "korora_queue_to_tx_start_us",
-    "korora_notify_duration_us",
-    "korora_receive_to_tx_complete_us",
-    "korora_fragment_count",
-    "korora_att_mtu",
-    "korora_timing_missing",
+    "hub_receive_ticks",
+    "hub_response_queued_ticks",
+    "hub_tx_start_ticks",
+    "hub_tx_complete_ticks",
+    "hub_receive_to_queue_us",
+    "hub_queue_to_tx_start_us",
+    "hub_notify_duration_us",
+    "hub_receive_to_tx_complete_us",
+    "hub_fragment_count",
+    "hub_att_mtu",
+    "hub_timing_missing",
     "request_fields_json",
     "response_fields_json",
 ]
@@ -222,7 +222,7 @@ COMMAND_RESULT_COLUMNS = [
     "source_address",
     "source_node",
     "source_label",
-    "source_fairy_index",
+    "source_node_index",
     "session_id",
     "record_id",
     "record_timestamp_ticks",
@@ -262,17 +262,17 @@ HOST_TRANSPORT_COLUMNS = [
     "clock_exchange_count",
     "clock_last_exchange_ns",
     "clock_last_rtt_us",
-    "korora_rs485_errors",
-    "korora_rs485_retries",
-    "korora_rs485_timeouts",
-    "korora_rs485_decode_errors",
-    "korora_rs485_reassembly_errors",
-    "korora_rs485_transmit_errors",
-    "korora_ble_dropped",
-    "galapagos_ttl_generated",
-    "korora_ttl_captured_records",
-    "korora_ttl_capture_edges",
-    "korora_ttl_capture_drops",
+    "hub_rs485_errors",
+    "hub_rs485_retries",
+    "hub_rs485_timeouts",
+    "hub_rs485_decode_errors",
+    "hub_rs485_reassembly_errors",
+    "hub_rs485_transmit_errors",
+    "hub_ble_dropped",
+    "ttl_generator_ttl_generated",
+    "hub_ttl_captured_records",
+    "hub_ttl_capture_edges",
+    "hub_ttl_capture_drops",
 ]
 
 
@@ -285,26 +285,26 @@ MARKER_COLUMNS = [
 
 def _node_map(header: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
     nodes: dict[int, dict[str, Any]] = {
-        KORORA_ADDRESS: {"node": "korora", "label": "korora", "fairy_index": ""},
-        GALAPAGOS_ADDRESS: {
-            "node": "galapagos",
-            "label": "galapagos",
-            "fairy_index": "",
+        HUB_ADDRESS: {"node": "hub", "label": "hub", "node_index": ""},
+        TTL_GENERATOR_ADDRESS: {
+            "node": "ttl_generator",
+            "label": "ttl_generator",
+            "node_index": "",
         },
-        ADELIE_ADDRESS: {"node": "adelie", "label": "adelie", "fairy_index": ""},
+        HOST_ADDRESS: {"node": "adelie", "label": "adelie", "node_index": ""},
     }
     metadata = (header or {}).get("metadata", {})
     for assignment in metadata.get("assignments", []):
         try:
-            fairy_index = int(assignment["fairy_number"])
+            node_index = int(assignment["node_number"])
         except (KeyError, TypeError, ValueError):
             continue
-        address = FAIRY_ADDRESS_BASE + fairy_index
-        node = f"fairy{fairy_index}"
+        address = NODE_ADDRESS_BASE + node_index
+        node = f"node{node_index}"
         nodes[address] = {
             "node": node,
             "label": str(assignment.get("label") or node),
-            "fairy_index": fairy_index,
+            "node_index": node_index,
         }
     return nodes
 
@@ -317,18 +317,18 @@ def _describe_address(
             f"{prefix}_address": "",
             f"{prefix}_node": "",
             f"{prefix}_label": "",
-            f"{prefix}_fairy_index": "",
+            f"{prefix}_node_index": "",
         }
     numeric = int(address)
     description = nodes.get(
         numeric,
-        {"node": f"node_0x{numeric:02x}", "label": "", "fairy_index": ""},
+        {"node": f"node_0x{numeric:02x}", "label": "", "node_index": ""},
     )
     return {
         f"{prefix}_address": numeric,
         f"{prefix}_node": description["node"],
         f"{prefix}_label": description["label"],
-        f"{prefix}_fairy_index": description["fairy_index"],
+        f"{prefix}_node_index": description["node_index"],
     }
 
 
@@ -592,25 +592,25 @@ def _write_command_outputs(
             "clock_t1_ns": request_fields.get("clock_t1_ns", ""),
             "clock_t2_ticks": response_fields.get("clock_t2_ticks", ""),
             "clock_t3_ticks": response_fields.get("clock_t3_ticks", ""),
-            "korora_receive_ticks": gateway_receive,
-            "korora_response_queued_ticks": response_queued,
-            "korora_tx_start_ticks": transmit_start,
-            "korora_tx_complete_ticks": transmit_complete,
-            "korora_receive_to_queue_us": _tick_difference_us(
+            "hub_receive_ticks": gateway_receive,
+            "hub_response_queued_ticks": response_queued,
+            "hub_tx_start_ticks": transmit_start,
+            "hub_tx_complete_ticks": transmit_complete,
+            "hub_receive_to_queue_us": _tick_difference_us(
                 response_queued, gateway_receive
             ),
-            "korora_queue_to_tx_start_us": _tick_difference_us(
+            "hub_queue_to_tx_start_us": _tick_difference_us(
                 transmit_start, response_queued
             ),
-            "korora_notify_duration_us": _tick_difference_us(
+            "hub_notify_duration_us": _tick_difference_us(
                 transmit_complete, transmit_start
             ),
-            "korora_receive_to_tx_complete_us": _tick_difference_us(
+            "hub_receive_to_tx_complete_us": _tick_difference_us(
                 transmit_complete, gateway_receive
             ),
-            "korora_fragment_count": timing.get("fragment_count", ""),
-            "korora_att_mtu": timing.get("att_mtu", ""),
-            "korora_timing_missing": not bool(timing),
+            "hub_fragment_count": timing.get("fragment_count", ""),
+            "hub_att_mtu": timing.get("att_mtu", ""),
+            "hub_timing_missing": not bool(timing),
             "request_fields_json": json.dumps(
                 request_fields, separators=(",", ":")
             ),
@@ -666,7 +666,7 @@ def _write_command_outputs(
                 "source_address": result["source_address"],
                 "source_node": result["source_node"],
                 "source_label": result["source_label"],
-                "source_fairy_index": result["source_fairy_index"],
+                "source_node_index": result["source_node_index"],
                 "session_id": result.get("session_id", ""),
                 "record_id": result.get("record_id", ""),
                 "record_timestamp_ticks": result.get("timestamp_ticks", ""),
@@ -868,7 +868,7 @@ def parse(log_path: Path, output_directory: Path) -> dict[str, Path]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Parse an Adelie Fairy log")
+    parser = argparse.ArgumentParser(description="Parse an Adelie node log")
     parser.add_argument("log", type=Path)
     parser.add_argument(
         "--output",

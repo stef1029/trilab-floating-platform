@@ -1,6 +1,6 @@
-# Korora Hub
+# Hub Hub
 
-Central nRF52840-based hub board for the behavioural rig. Korora provides:
+Central nRF52840-based hub board for the behavioural rig. Hub provides:
 
 - RS-485 master communication to peripheral boards
 - Differential SYNC distribution to peripheral boards
@@ -17,7 +17,7 @@ The current power-management assumption is an nPM1300-class Nordic PMIC. Exact P
 
 ## System architecture
 
-Korora is the system master.
+Hub is the system master.
 
 The hub:
 
@@ -67,22 +67,22 @@ LiPo BATTERY ----------->| charger / fuel gauge|
 
 ## Relationship to peripheral boards
 
-Korora is designed to connect directly to peripheral boards using the common 10-pin JST-GH bus.
+Hub is designed to connect directly to peripheral boards using the common 10-pin JST-GH bus.
 
-Korora is the RS-485 bus master and the source of the differential SYNC pulse. Peripheral boards are expected to:
+Hub is the RS-485 bus master and the source of the differential SYNC pulse. Peripheral boards are expected to:
 
 - listen for hub commands
 - transmit only when addressed
 - capture SYNC locally in hardware
-- report captured timestamps and local events back to Korora
+- report captured timestamps and local events back to the hub
 
-The initial Reward Port design assumes a 500000 baud, 8-N-1, half-duplex RS-485 link and an initially 4 Hz SYNC pulse.
+The initial Reward Port design assumes a 460800 baud, 8-N-1, half-duplex RS-485 link and an initially 4 Hz SYNC pulse.
 
 These values are initial protocol parameters rather than permanent electrical limitations.
 
 ## Power inputs
 
-Korora has two power sources:
+Hub has two power sources:
 
 1. LiPo battery
 2. External 5 V bench / development supply
@@ -130,7 +130,7 @@ The bench supply must be current limited during initial bring-up.
 
 ## Power rails
 
-Korora distributes two positive rails to the peripheral connector.
+Hub distributes two positive rails to the peripheral connector.
 
 ### 3V3
 
@@ -158,7 +158,7 @@ maximum peripheral 3V3 load
 required regulated 3V3 current
 ```
 
-If this exceeds the useful continuous current available from the selected PMIC regulator configuration, Korora requires an external 3V3 regulator or a revised power architecture.
+If this exceeds the useful continuous current available from the selected PMIC regulator configuration, Hub requires an external 3V3 regulator or a revised power architecture.
 
 ### VLOAD
 
@@ -184,7 +184,7 @@ The final VLOAD voltage range and current limit must be documented after the PMI
 
 ## PMIC interface
 
-Korora should provide a digital control / telemetry link between the PMIC and the nRF52840.
+Hub should provide a digital control / telemetry link between the PMIC and the nRF52840.
 
 Current intended interface:
 
@@ -217,7 +217,7 @@ BMD-340-A-R
 nRF52840
 ```
 
-Korora uses the nRF52840 for:
+Hub uses the nRF52840 for:
 
 - system timing
 - RS-485 protocol
@@ -266,7 +266,7 @@ The final pin assignment should be chosen only after confirming:
 
 ## RS-485 data bus
 
-Korora uses one SN65HVD75DGKR for the main half-duplex RS-485 bus.
+Hub uses one SN65HVD75DGKR for the main half-duplex RS-485 bus.
 
 Logical connections:
 
@@ -280,14 +280,14 @@ BMD RS485_DE ---------> SN65HVD75 DE
                               +---- RS485_N
 ```
 
-Exact DE and /RE wiring is TBD.
+On the built PCB, DE and /RE are tied together on one RS485_DIR line (P0.15). High enables the driver and disables the receiver; low listens. Hub drives it only while transmitting, and RX has a pull-up because the receiver output floats while DIR is high.
 
-The design must guarantee that Korora does not unintentionally drive the bus during reset or boot.
+The design must guarantee that Hub does not unintentionally drive the bus during reset or boot.
 
 Initial protocol configuration inherited from the first Reward Port:
 
 ```text
-500000 baud
+460800 baud
 8 data bits
 no parity
 1 stop bit
@@ -296,11 +296,11 @@ hub master polling
 peripherals transmit only when addressed
 ```
 
-Korora is the only normal bus master.
+Hub is the only normal bus master.
 
 ## Differential SYNC output
 
-Korora uses a second SN65HVD75DGKR as a dedicated differential digital-output driver.
+Hub uses a second SN65HVD75DGKR as a dedicated differential digital-output driver.
 
 Concept:
 
@@ -311,7 +311,7 @@ BMD SYNC GPIO --------> SN65HVD75 D
                              +---- SYNC_N
 ```
 
-Korora is the source of SYNC.
+Hub is the source of SYNC.
 
 Peripheral boards receive the differential pair and convert it back to a local logic signal for hardware timer capture.
 
@@ -331,18 +331,18 @@ They do not by themselves provide authentication or cryptographic security.
 
 ## System time
 
-Korora is the system time authority.
+Hub is the system time authority.
 
 The design currently assumes:
 
 - no distributed high-frequency TIMEBASE line
 - peripheral boards keep their own local hardware timers
-- Korora periodically emits SYNC
+- Hub periodically emits SYNC
 - peripherals hardware-capture the SYNC edge
 - peripherals report the captured local timestamp
-- Korora estimates the mapping between peripheral-local time and hub time
+- Hub estimates the mapping between peripheral-local time and hub time
 
-Korora should maintain a monotonic high-resolution local clock suitable for:
+Hub should maintain a monotonic high-resolution local clock suitable for:
 
 - command timestamps
 - peripheral event timestamps
@@ -353,7 +353,7 @@ Korora should maintain a monotonic high-resolution local clock suitable for:
 
 ## Daisy-chain connector
 
-Korora uses the same 10-pin JST-GH pinout as the peripheral boards.
+Hub uses the same 10-pin JST-GH pinout as the peripheral boards.
 
 | Pin | Signal  |
 | --: | ------- |
@@ -372,7 +372,7 @@ Pins 7 and 9 are the same VLOAD net.
 
 Pins 6, 8, and 10 join the same ground system.
 
-Korora will normally be one physical end of both differential buses.
+Hub will normally be one physical end of both differential buses.
 
 Therefore the hub should include termination provisions for:
 
@@ -411,7 +411,7 @@ The complete cable and connector chain must be checked.
 
 ## Local 9-DoF sensing
 
-Korora contains:
+Hub contains:
 
 ```text
 6-axis IMU:
@@ -533,7 +533,7 @@ and:
 absolute or long-term XYZ position tracking
 ```
 
-If absolute position is later required, Korora will need an external position reference such as:
+If absolute position is later required, Hub will need an external position reference such as:
 
 - UWB
 - optical tracking
@@ -616,7 +616,7 @@ Also provide useful test points for:
 
 ## Firmware responsibilities
 
-Korora firmware is responsible for:
+Hub firmware is responsible for:
 
 - boot-time safe-state configuration
 - PMIC initialization
@@ -642,12 +642,12 @@ Korora firmware is responsible for:
 
 Initial bus behaviour:
 
-1. Korora owns the bus.
-2. Korora addresses one peripheral.
+1. Hub owns the bus.
+2. Hub addresses one peripheral.
 3. The addressed peripheral may respond.
 4. Unaddressed peripherals remain receive-only.
-5. Korora detects response timeout or malformed response.
-6. Korora continues polling according to the active session configuration.
+5. Hub detects response timeout or malformed response.
+6. Hub continues polling according to the active session configuration.
 
 The protocol still needs definitions for:
 
@@ -696,7 +696,7 @@ Do not allow an uncontrolled battery collapse to be the normal session-ending me
 
 ## Fault handling
 
-Korora should detect and log at least:
+Hub should detect and log at least:
 
 - PMIC fault
 - low battery

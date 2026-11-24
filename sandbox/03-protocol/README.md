@@ -2,7 +2,7 @@
 
 ```
 PC  ──BLE──>  nRF52840 DK  ──UART 460800──>  Nucleo G071RB  ──>  LED
- adelie.transport        fairy::transport         fairy::transport
+ adelie.transport        rig::transport         rig::transport
 ```
 
 **Genuine Transport v1 at every hop** — 12-byte header, CRC16-CCITT, COBS
@@ -28,23 +28,23 @@ transceivers go in.
 
 ```sh
 ../sb bridge build && ../sb bridge flash
-../sb fairy  build && ../sb fairy  flash
+../sb node  build && ../sb node  flash
 cd host && run            # Windows cmd;  ./run.sh in git bash
 ```
 
-**Ping Fairy 0** first — it exercises the whole path with no side effect.
+**Ping node 0** first — it exercises the whole path with no side effect.
 
-Consoles: bridge on the DK's VCOM0, fairy on the ST-Link VCOM, both 115200.
+Consoles: bridge on the DK's VCOM0, node on the ST-Link VCOM, both 115200.
 Each prints every frame it sees.
 
 ## Real vs stubbed
 
-**Real** — the header, CRC16, COBS, addresses (`0x03` Adelie, `0x10` Fairy 0),
+**Real** — the header, CRC16, COBS, addresses (`0x03` Adelie, `0x10` node 0),
 transfer-ID correlation, request/response flags, the ISR→main-loop handoff on
 both boards.
 
-**Stubbed** — payload is `[opcode, value]` rather than Adelie v2 TLV; the
-address is hardcoded instead of assigned by Magellan; no fragmentation; no
+**Stubbed** — payload is `[opcode, value]` rather than Command v2 TLV; the
+address is hardcoded instead of assigned by Discovery; no fragmentation; no
 RS485 direction control.
 
 Each is a separate next step, and **none changes the layer below**.

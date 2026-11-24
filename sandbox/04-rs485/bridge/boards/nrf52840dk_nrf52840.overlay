@@ -1,8 +1,8 @@
 #include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
 
 /*
- * Link to the Fairy, now through an RS485 transceiver instead of a bare
- * wire. Same pins the real Korora prototype uses:
+ * Link to the node, now through an RS485 transceiver instead of a bare
+ * wire. Same pins the real Hub prototype uses:
  *
  *   P0.27 -> DI    transceiver data in   (we transmit)
  *   P0.26 <- RO    transceiver data out  (we receive)
@@ -31,7 +31,7 @@
 /*
  * The direction pin is not a UART property, so it does not belong under
  * &uart1. zephyr,user is the conventional home for application-level
- * devicetree entries -- the real Korora declares RS485_DIR the same way.
+ * devicetree entries -- the real Hub declares RS485_DIR the same way.
  */
 / {
     zephyr,user {

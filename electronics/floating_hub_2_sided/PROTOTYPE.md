@@ -1,11 +1,11 @@
-# Korora prototype
+# Hub prototype
 
-Prototype wiring for the Korora hub using the hardware currently on hand:
+Prototype wiring for the hub hub using the hardware currently on hand:
 
 - Nordic nRF52840 DK
 - ST STEVAL-MKI240KA / LSM6DSV32X 6-axis IMU
 - MEMSIC MMC5983MA-B / MMC5983MA 3-axis magnetometer
-- Existing Fairy communication hardware and firmware
+- Existing node communication hardware and firmware
 
 Both motion sensors connect directly to the nRF52840 over one shared I2C bus.
 
@@ -14,7 +14,7 @@ The nPM power system is not part of this prototype wiring revision. During senso
 ## Prototype architecture
 
 ```text
-                              existing Fairy hardware
+                              existing node hardware
                                       |
                                       |
                          UART / SYNC / EVENT / TTL
@@ -23,11 +23,11 @@ The nPM power system is not part of this prototype wiring revision. During senso
                          +-------------------------+
                          |      nRF52840 DK        |
                          |                         |
-                         | Fairy UART              |
+                         | Node UART              |
                          | TX  P0.27               |
                          | RX  P0.26               |
                          |                         |
-                         | Korora sensor I2C       |
+                         | Hub sensor I2C       |
                          | SDA P0.30 / A4          |
                          | SCL P0.31 / A5          |
                          +-----+--------------+----+
@@ -203,7 +203,7 @@ This does not conflict with the IMU at `0x6A`.
 
 ## Zephyr overlay
 
-The existing Fairy overlay should be preserved.
+The existing node overlay should be preserved.
 
 Use the following merged overlay for the prototype:
 
@@ -215,7 +215,7 @@ Use the following merged overlay for the prototype:
 / {
     zephyr,user {
         /*
-         * Existing Fairy signals.
+         * Existing node signals.
          * Keep these assignments unchanged.
          */
         sync-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
@@ -223,7 +223,7 @@ Use the following merged overlay for the prototype:
         ttl-input-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
 
         /*
-         * Korora sensor interrupt inputs.
+         * Hub sensor interrupt inputs.
          * Sensor register communication itself is entirely I2C.
          */
         imu-int-gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
@@ -233,9 +233,9 @@ Use the following merged overlay for the prototype:
 
 &pinctrl {
     /*
-     * Existing Fairy UART.
+     * Existing node UART.
      */
-    fairy_uart1_default: fairy_uart1_default {
+    node_uart1_default: node_uart1_default {
         group1 {
             psels = <NRF_PSEL(UART_TX, 0, 27)>;
         };
@@ -246,7 +246,7 @@ Use the following merged overlay for the prototype:
         };
     };
 
-    fairy_uart1_sleep: fairy_uart1_sleep {
+    node_uart1_sleep: node_uart1_sleep {
         group1 {
             psels = <NRF_PSEL(UART_TX, 0, 27)>,
                     <NRF_PSEL(UART_RX, 0, 26)>;
@@ -259,15 +259,15 @@ Use the following merged overlay for the prototype:
     compatible = "nordic,nrf-uarte";
     status = "okay";
     current-speed = <460800>;
-    pinctrl-0 = <&fairy_uart1_default>;
-    pinctrl-1 = <&fairy_uart1_sleep>;
+    pinctrl-0 = <&node_uart1_default>;
+    pinctrl-1 = <&node_uart1_sleep>;
     pinctrl-names = "default", "sleep";
 };
 
 /*
  * The DK normally maps i2c0 onto P0.26/P0.27.
  *
- * Fairy owns those pins, so i2c0 must be disabled when
+ * Node owns those pins, so i2c0 must be disabled when
  * CONFIG_I2C is enabled.
  */
 &i2c0 {
@@ -276,7 +276,7 @@ Use the following merged overlay for the prototype:
 
 /*
  * The DK board definition says i2c1 and spi1 cannot be used
- * together. Korora uses this peripheral instance for I2C.
+ * together. Hub uses this peripheral instance for I2C.
  */
 &spi1 {
     status = "disabled";
@@ -357,9 +357,9 @@ nRF52840
    |
    +-- read MMC5983MA magnetometer
    |
-   +-- timestamp data in Korora hub time
+   +-- timestamp data in the hub hub time
    |
-   +-- fairy event generated
+   +-- node event generated
 ```
 
 Do not use the LSM6DSV32X embedded sensor hub for the MMC5983MA in this prototype.
@@ -406,9 +406,9 @@ Target application update rate:
 
 The sensors do not by themselves provide drift-free long-term XYZ position.
 
-## Existing Fairy timing
+## Existing node timing
 
-The existing Fairy timing resources remain:
+The existing node timing resources remain:
 
 ```text
 timer2 = enabled
@@ -416,13 +416,13 @@ timer3 = enabled
 rtc2   = enabled
 ```
 
-Sensor acquisition should timestamp samples using the same Korora timing model rather than creating an unrelated timebase.
+Sensor acquisition should timestamp samples using the same Hub timing model rather than creating an unrelated timebase.
 
 The detailed timestamp / fusion scheduling policy can be added after raw sensor data are proven.
 
 ## Prototype-to-PCB decisions this setup should answer
 
-This prototype should provide enough evidence to freeze several Korora PCB decisions:
+This prototype should provide enough evidence to freeze several Hub PCB decisions:
 
 - whether one shared I2C bus is sufficient
 - final I2C speed
@@ -433,6 +433,6 @@ This prototype should provide enough evidence to freeze several Korora PCB decis
 - IMU filtering settings
 - magnetometer calibration approach
 - required physical separation between magnetometer and noisy hardware
-- final sensor-axis orientation on the Korora PCB
+- final sensor-axis orientation on the hub PCB
 
-The custom Korora PCB can then use the same logical topology:
+The custom Hub PCB can then use the same logical topology:

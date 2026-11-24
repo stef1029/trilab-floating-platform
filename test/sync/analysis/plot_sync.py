@@ -10,13 +10,13 @@ import numpy as np
 import pandas as pd
 from cycler import cycler
 
-REFERENCE_NODE = "korora"
+REFERENCE_NODE = "hub"
 
 NODE_NAMES = {
     "adelie": "Adelie",
-    "fairy": "Fairy",
-    "galapagos": "Galapagos",
-    "korora": "Korora",
+    "node": "Node",
+    "ttl_generator": "TTL generator",
+    "hub": "Hub",
 }
 
 _GENERATED_PLOTS: list[Path] = []
@@ -243,10 +243,10 @@ def finish(
 def write_plot_index(output: Path, plots: list[Path]) -> None:
     """Write a compact, human-readable catalogue beside the plot files."""
     descriptions = {
-        "cross_device_event_alignment.png": "Event timing offsets from Korora for every selected remote device",
+        "cross_device_event_alignment.png": "Event timing offsets from the hub for every selected remote device",
         "cross_device_event_error_by_node.png": "Cross-device event timing error distributions grouped by device",
-        "korora_reference_event_interval.png": "Spacing between consecutive Korora reference events",
-        "adelie_clock_sync_round_trip_time.png": "BLE clock synchronization latency excluding Korora processing time",
+        "hub_reference_event_interval.png": "Spacing between consecutive Hub reference events",
+        "adelie_clock_sync_round_trip_time.png": "BLE clock synchronization latency excluding Hub processing time",
         "adelie_clock_model_fit.png": "Rolling clock model fit error on Adelie",
         "adelie_clock_rate_estimate.png": "Adelie clock rate error relative to nominal",
         "adelie_clock_prediction_error.png": "One-step Adelie clock prediction error",
@@ -974,8 +974,8 @@ def plot_event_alignment(
     axis.axhline(0, color=PALETTE["muted"],
                  linewidth=1.15, alpha=0.72, zorder=1)
     axis.set_title("Cross-device event alignment")
-    axis.set_xlabel("Matched Korora event number")
-    axis.set_ylabel("Timing offset from Korora (µs)")
+    axis.set_xlabel("Matched Hub event number")
+    axis.set_ylabel("Timing offset from the hub (µs)")
     add_summary_badge(axis, data["error_us"], "µs", signed=True)
     finish(figure, axis, output / "cross_device_event_alignment.png", show)
 
@@ -1094,11 +1094,11 @@ def plot_reference_event_spacing(
         edgecolors="white",
         linewidths=0.45,
     )
-    axis.set_title("Korora · Reference event interval")
+    axis.set_title("Hub · Reference event interval")
     axis.set_xlabel("Reference event interval number")
     axis.set_ylabel("Interval (ms)")
     add_summary_badge(axis, spacing_ms, "ms")
-    finish(figure, axis, output / "korora_reference_event_interval.png", show)
+    finish(figure, axis, output / "hub_reference_event_interval.png", show)
 
 
 def plot_adelie_network_rtt(
@@ -1123,7 +1123,7 @@ def plot_adelie_network_rtt(
     )
     axis.set_title("Adelie · BLE clock sync round-trip time")
     axis.set_xlabel("Elapsed time (s)")
-    axis.set_ylabel("Round-trip time excluding Korora processing (µs)")
+    axis.set_ylabel("Round-trip time excluding Hub processing (µs)")
     add_summary_badge(axis, data["network_rtt_us"], "µs")
     finish(figure, axis, output / "adelie_clock_sync_round_trip_time.png", show)
 
@@ -1236,12 +1236,12 @@ def plot_adelie_command_breakdown(
         return
 
     stages = [
-        ("BLE to Korora", "ble_down_est_us"),
-        ("Korora command queue", "korora_queue_to_i2c_us"),
-        ("I²C to Fairy", "i2c_down_us"),
-        ("Fairy processing", "fairy_action_us"),
+        ("BLE to the hub", "ble_down_est_us"),
+        ("Hub command queue", "hub_queue_to_i2c_us"),
+        ("I²C to node", "i2c_down_us"),
+        ("Node processing", "node_action_us"),
         ("I²C response", "i2c_up_and_poll_us"),
-        ("Korora result handling", "korora_post_ack_us"),
+        ("Hub result handling", "hub_post_ack_us"),
         ("BLE to Adelie", "ble_up_est_us"),
     ]
     labels: list[str] = []
@@ -1308,8 +1308,8 @@ def plot_adelie_ble_directions(
         axis.plot(guide, guide, linestyle="--",
                   linewidth=1, label="Equal latency")
     axis.set_title("Adelie · BLE direction latency comparison")
-    axis.set_xlabel("Adelie → Korora latency (µs)")
-    axis.set_ylabel("Korora → Adelie latency (µs)")
+    axis.set_xlabel("Adelie → Hub latency (µs)")
+    axis.set_ylabel("Hub → Adelie latency (µs)")
     finish(figure, axis, output / "adelie_ble_direction_latency.png", show)
 
 
@@ -1335,7 +1335,7 @@ def plot_ttl_error_components(
         alpha=0.75,
         edgecolors="white",
         linewidths=0.45,
-        label="Korora generation error",
+        label="Hub generation error",
     )
     axis.scatter(
         data["elapsed_s"],
@@ -1541,7 +1541,7 @@ def generate_plots(
 
         if profile in {"expanded", "full"}:
             # Restore the original engineering plot set for remote nodes only.
-            # Korora remains available as the reference in combined plots, but
+            # Hub remains available as the reference in combined plots, but
             # does not get meaningless zero-error or identity-model plots.
             plot_tracking_state(node, sync, diagnostics,
                                 pairs, output_dir, show)
@@ -1603,12 +1603,12 @@ def generate_plots(
     if REFERENCE_NODE in selected and profile == "full":
         plot_reference_event_spacing(events, output_dir, show)
 
-    # TTL is a Galapagos to Korora path, not a pseudo node.  Include its plots
+    # TTL is a TTL generator to the hub path, not a pseudo node.  Include its plots
     # in the same report whenever the full data set is requested, or whenever
     # either endpoint is explicitly selected.
     include_ttl = (
         not ttl_pulses.empty
-        and (node_selection == "all" or bool(selected & {"galapagos", "korora"}))
+        and (node_selection == "all" or bool(selected & {"ttl_generator", "hub"}))
     )
     if include_ttl:
         plot_ttl_error_components(ttl_pulses, output_dir, show)
@@ -1649,7 +1649,7 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help=(
             "all or a comma-separated node selection such as "
-            "fairy,galapagos,korora,adelie. TTL path plots are integrated "
+            "node,ttl_generator,hub,adelie. TTL path plots are integrated "
             "when all data or either endpoint is selected"
         ),
     )
@@ -1659,7 +1659,7 @@ def parse_args() -> argparse.Namespace:
         default="expanded",
         help=(
             "curated generates the core report; expanded adds detailed remote-device "
-            "diagnostics; full also includes Korora reference diagnostics"
+            "diagnostics; full also includes Hub reference diagnostics"
         ),
     )
     parser.add_argument(

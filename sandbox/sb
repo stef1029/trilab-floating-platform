@@ -7,9 +7,9 @@
 #                stm32       NUCLEO-G071RB   LED blink
 #   02-ble       ble         nRF52840 DK     BLE peripheral, LED + button
 #   03-protocol  bridge      nRF52840 DK     BLE <-> UART, Transport v1
-#                fairy       NUCLEO-G071RB   the far end of that link
+#                node       NUCLEO-G071RB   the far end of that link
 #   04-rs485     bridge485   nRF52840 DK     the same link over RS485
-#                fairy485    NUCLEO-G071RB   the far end, with a DE pin
+#                node485    NUCLEO-G071RB   the far end, with a DE pin
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -27,10 +27,10 @@ case "$target" in
   bridge) kind=zephyr; app=03-protocol/bridge ;;
   bridge485) kind=zephyr; app=04-rs485/bridge ;;
   stm32)  kind=pio;    app=01-blink/stm32 ;;
-  fairy)  kind=pio;    app=03-protocol/fairy ;;
-  fairy485) kind=pio;    app=04-rs485/fairy ;;
+  node)  kind=pio;    app=03-protocol/reward_port ;;
+  node485) kind=pio;    app=04-rs485/reward_port ;;
   *)
-    echo "usage: $0 {nordic|stm32|ble|bridge|fairy|bridge485|fairy485} [build|flash|monitor|index]" >&2
+    echo "usage: $0 {nordic|stm32|ble|bridge|node|bridge485|node485} [build|flash|monitor|index]" >&2
     exit 2 ;;
 esac
 

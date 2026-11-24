@@ -1,69 +1,69 @@
-# Korora synchronization system
+# Hub synchronization system
 
 ## Purpose
 
 This repository implements a four node timing experiment for measuring clock conversion quality, external event alignment, scheduled TTL generation, and command latency.
 
-The system uses Korora as the reference time domain. Fairy and Galapagos maintain independent affine clock models that convert their local timestamps into Korora timer ticks. Adelie is a laptop client that measures application level clock exchange quality and command round trip latency through Bluetooth.
+The system uses Hub as the reference time domain. Node and TTL generator maintain independent affine clock models that convert their local timestamps into the hub timer ticks. Adelie is a laptop client that measures application level clock exchange quality and command round trip latency through Bluetooth.
 
-The current implementation targets nRF Connect SDK 3.4.0 for the Nordic boards and STM32 HAL with PlatformIO for Fairy.
+The current implementation targets nRF Connect SDK 3.4.0 for the Nordic boards and STM32 HAL with PlatformIO for node.
 
 ## Nodes
 
-### Korora
+### Hub
 
-Korora runs on an nRF52840 DK using the board target:
+Hub runs on an nRF52840 DK using the board target:
 
 ```text
 nrf52840dk/nrf52840
 ```
 
-Korora is the reference node.
+Hub is the reference node.
 
 Its responsibilities are:
 
 - Run the 16 MHz reference timer
-- Emit the Fairy synchronization pulse
-- Poll Fairy over I2C
-- Connect to Galapagos as a Bluetooth central
+- Emit the node synchronization pulse
+- Poll node over I2C
+- Connect to TTL generator as a Bluetooth central
 - Advertise an Adelie control service as a Bluetooth peripheral
-- Build one independent affine model for Fairy
-- Build one independent affine model for Galapagos
+- Build one independent affine model for node
+- Build one independent affine model for TTL generator
 - Capture the shared external event locally in hardware
-- Convert remote event timestamps into Korora time
-- Match remote events to the nearest Korora reference event
-- Schedule hardware TTL pulses on Galapagos
-- Capture the returned Galapagos TTL pulse on P1.12 using GPIOTE, PPI, and TIMER3
+- Convert remote event timestamps into the hub time
+- Match remote events to the nearest Hub reference event
+- Schedule hardware TTL pulses on TTL generator
+- Capture the returned TTL generator TTL pulse on P1.12 using GPIOTE, PPI, and TIMER3
 - Stream versioned CSV records over the virtual serial port
 
-### Fairy
+### Node
 
-Fairy runs on an STM32 Nucleo G071RB.
+Node runs on an STM32 Nucleo G071RB.
 
 Its responsibilities are:
 
-- Capture the Korora synchronization pulse with TIM2
+- Capture the hub synchronization pulse with TIM2
 - Capture the shared external event with TIM2
 - Extend the local timer into a 64 bit time value
 - Queue synchronization, event, and command acknowledgement records
 - Return one atomic 40 byte frame per I2C read
-- Receive immediate command bytes from Korora
+- Receive immediate command bytes from the hub
 - Report status and fault counters
 
-Fairy is an I2C target at unshifted address `0x42`.
+Node is an I2C target at unshifted address `0x42`.
 
-### Galapagos
+### TTL generator
 
-Galapagos runs on an nRF54L15 DK using the board target:
+TTL generator runs on an nRF54L15 DK using the board target:
 
 ```text
 nrf54l15dk/nrf54l15/cpuapp
 ```
 
-Galapagos advertises as:
+TTL generator advertises as:
 
 ```text
-galapagos
+ttl_generator
 ```
 
 Its responsibilities are:
@@ -71,14 +71,14 @@ Its responsibilities are:
 - Report selected Bluetooth connection anchor timestamps
 - Capture the shared external event on P1.11
 - Use GPIOTE, DPPI, and GRTC for hardware event capture
-- Receive scheduled TTL commands from Korora
+- Receive scheduled TTL commands from the hub
 - Generate a hardware timed TTL pulse on P1.12 using GRTC compare events, DPPI, and GPIOTE SET and CLR tasks
 - Report the local timestamp associated with the generated TTL edge
 - Queue outgoing 40 byte records
 - Send one Bluetooth notification at a time
 - Preserve a nominal 16 MHz timestamp domain by multiplying GRTC microseconds by 16
 
-The current Galapagos report rate is approximately 1 Hz.
+The current TTL generator report rate is approximately 1 Hz.
 
 ### Adelie
 
@@ -86,21 +86,21 @@ Adelie is the laptop client.
 
 Its responsibilities are:
 
-- Connect to the Korora Adelie service
+- Connect to the hub Adelie service
 - Perform repeated application clock exchanges
-- Fit a rolling 16 point Adelie to Korora clock model
-- Send immediate Fairy commands through Korora
+- Fit a rolling 16 point Adelie to the hub clock model
+- Send immediate node commands through Hub
 - Record command stage notifications
 - Save clock and latency CSV files
 - Produce host side summaries
 
 ## Main timing domains
 
-Korora uses a 16 MHz timer as the common reference domain.
+Hub uses a 16 MHz timer as the common reference domain.
 
-Fairy reports local TIM2 ticks at 16 MHz.
+Node reports local TIM2 ticks at 16 MHz.
 
-Galapagos receives GRTC timestamps at 1 MHz and multiplies them by 16 before transmission. Bluetooth anchor timestamps and scheduled TTL timestamps are represented in the same nominal 16 MHz domain.
+TTL generator receives GRTC timestamps at 1 MHz and multiplies them by 16 before transmission. Bluetooth anchor timestamps and scheduled TTL timestamps are represented in the same nominal 16 MHz domain.
 
 Adelie uses host monotonic nanoseconds at 1 GHz.
 
@@ -121,53 +121,53 @@ A model reset begins a new analysis segment. Fits and interval calculations must
 
 ## Hardware synchronization paths
 
-### Fairy synchronization path
+### Node synchronization path
 
-Korora emits a periodic pulse using TIMER2, PPI, and GPIOTE.
+Hub emits a periodic pulse using TIMER2, PPI, and GPIOTE.
 
 The nominal current rate is 4 Hz.
 
 The pulse path is:
 
 ```text
-Korora TIMER2 compare
+Hub TIMER2 compare
 → PPI
 → GPIOTE output task
-→ Fairy TIM2 input capture
+→ node TIM2 input capture
 ```
 
-Korora associates a returned Fairy synchronization record with its own pulse schedule. Fairy does not need to assign the Korora pulse number.
+Hub associates a returned node synchronization record with its own pulse schedule. Node does not need to assign the hub pulse number.
 
-### Galapagos synchronization path
+### TTL generator synchronization path
 
-Korora and Galapagos both observe Bluetooth connection event anchors from their controllers.
+Hub and TTL generator both observe Bluetooth connection event anchors from their controllers.
 
-Galapagos sends selected anchor reports to Korora in the shared 40 byte frame. Korora matches the Bluetooth event counter and maps the controller anchor into the Korora timer domain.
+TTL generator sends selected anchor reports to the hub in the shared 40 byte frame. Hub matches the Bluetooth event counter and maps the controller anchor into the hub timer domain.
 
-Galapagos currently sends approximately one selected anchor report per second.
+TTL generator currently sends approximately one selected anchor report per second.
 
-### Scheduled Galapagos TTL path
+### Scheduled TTL generator TTL path
 
-Korora periodically chooses a target time in the Korora domain and uses the current Galapagos affine model to calculate the corresponding Galapagos local target.
+Hub periodically chooses a target time in the hub domain and uses the current TTL generator affine model to calculate the corresponding TTL generator local target.
 
-Korora sends a 20 byte scheduling command over the Galapagos TTL control characteristic. Galapagos uses two absolute GRTC compare events to generate the rising and falling edges entirely in hardware.
+Hub sends a 20 byte scheduling command over the TTL generator TTL control characteristic. TTL generator uses two absolute GRTC compare events to generate the rising and falling edges entirely in hardware.
 
 The output path is:
 
 ```text
-Galapagos GRTC SET compare
+TTL generator GRTC SET compare
 → DPPI connection
 → GPIOTE SET task
-→ Galapagos P1.12 rising edge
-→ Korora P1.12 input
+→ TTL generator P1.12 rising edge
+→ Hub P1.12 input
 → GPIOTE event
 → PPI connection
-→ Korora TIMER3 capture
+→ Hub TIMER3 capture
 ```
 
-A second GRTC compare triggers the Galapagos GPIOTE CLR task at the requested pulse width.
+A second GRTC compare triggers the TTL generator GPIOTE CLR task at the requested pulse width.
 
-Korora TIMER3 is cleared from the same TIMER2 compare event that begins each 4 Hz reference interval. This keeps TIMER3 phase aligned with TIMER2 while leaving the existing TIMER2 capture channels unchanged.
+Hub TIMER3 is cleared from the same TIMER2 compare event that begins each 4 Hz reference interval. This keeps TIMER3 phase aligned with TIMER2 while leaving the existing TIMER2 capture channels unchanged.
 
 The standard automated test currently uses:
 
@@ -178,17 +178,17 @@ pulse width 100 us
 timeout 250 ms after the target
 ```
 
-Korora logs the scheduled target, the generated timestamp reported by Galapagos, the locally acquired edge, and the combined result.
+Hub logs the scheduled target, the generated timestamp reported by TTL generator, the locally acquired edge, and the combined result.
 
 ## External event capture
 
 A shared rising edge should be wired to the event input on each participating embedded node.
 
-Korora uses hardware capture into TIMER2.
+Hub uses hardware capture into TIMER2.
 
-Fairy uses TIM2 input capture.
+Node uses TIM2 input capture.
 
-Galapagos uses:
+TTL generator uses:
 
 ```text
 P1.11 rising edge
@@ -198,57 +198,57 @@ P1.11 rising edge
 → GRTC compare register
 ```
 
-The Galapagos interrupt handler reads the already captured register value. Interrupt latency is not part of the event timestamp.
+The TTL generator interrupt handler reads the already captured register value. Interrupt latency is not part of the event timestamp.
 
-The Galapagos overlay assigns the Zephyr user event GPIO property to GPIO controller 1 pin 11 with active high polarity.
+The TTL generator overlay assigns the Zephyr user event GPIO property to GPIO controller 1 pin 11 with active high polarity.
 
 ## Suggested wiring
 
-### Korora and Fairy
+### Hub and node
 
-- Korora I2C SCL on P0.27 to Fairy PB8
-- Korora I2C SDA on P0.26 to Fairy PB9
-- Korora synchronization output on P1.10 to Fairy PA0
-- Shared external event to Korora P1.11
-- Shared external event to Fairy PA1
+- Hub I2C SCL on P0.27 to node PB8
+- Hub I2C SDA on P0.26 to node PB9
+- Hub synchronization output on P1.10 to node PA0
+- Shared external event to the hub P1.11
+- Shared external event to node PA1
 - Common ground between boards
 
 Use one suitable pair of I2C pull resistors to the correct application voltage.
 
 Do not connect independently powered USB board power rails together.
 
-### Galapagos event input
+### TTL generator event input
 
-- Shared external event to Galapagos P1.11
+- Shared external event to TTL generator P1.11
 - Common ground with the event generator and the other boards
 
 Verify that the event source uses safe logic levels for every connected board.
 
-### Galapagos scheduled TTL output
+### TTL generator scheduled TTL output
 
-- Galapagos P1.12 to Korora P1.12
-- Galapagos ground to Korora ground
+- TTL generator P1.12 to the hub P1.12
+- TTL generator ground to the hub ground
 - Keep the P1.11 shared external event wiring separate from the P1.12 scheduled TTL wiring
 
-The current direct digital connection assumes that Galapagos produces a 3.3 V compatible high level for Korora. Do not connect the two board power rails together when both boards are independently USB powered.
+The current direct digital connection assumes that TTL generator produces a 3.3 V compatible high level for the hub. Do not connect the two board power rails together when both boards are independently USB powered.
 
 ## Repository layout
 
 ```text
-korora/
+hub/
     src/
         main.c
-        adelie_protocol.h
+        command_protocol.h
     boards/
         nrf52840dk_nrf52840.overlay
     prj.conf
 
-fairy/
+node/
     src/
         main.c
     platformio.ini
 
-galapagos/
+ttl_generator/
     src/
         main.c
     boards/
@@ -273,21 +273,21 @@ Repository also includes `arduino_pulse` which is the GPIO event generator made 
 
 ## Bring up order
 
-1. Flash Fairy and connect the I2C wiring
+1. Flash node and connect the I2C wiring
 
-2. Flash Galapagos and confirm that it advertises
+2. Flash TTL generator and confirm that it advertises
 
-3. Flash Korora
+3. Flash Hub
 
-4. Open Korora VCOM0 at 115200 baud using 8 data bits, no parity, and 1 stop bit
+4. Open Hub VCOM0 at 115200 baud using 8 data bits, no parity, and 1 stop bit
 
-5. Confirm that Korora prints `SCHEMA,3`
+5. Confirm that Hub prints `SCHEMA,3`
 
-6. Confirm that Korora prints its `READY` record and `TTL_INPUT_READY`
+6. Confirm that Hub prints its `READY` record and `TTL_INPUT_READY`
 
-7. Confirm that the Fairy link produces `PAIR_RAW` and `SYNC` records
+7. Confirm that the node link produces `PAIR_RAW` and `SYNC` records
 
-8. Confirm that the Galapagos link reaches connected and subscribed states
+8. Confirm that the TTL generator link reaches connected and subscribed states
 
 9. Wait for both remote clock models to reach `TRACK`
 
@@ -295,13 +295,13 @@ Repository also includes `arduino_pulse` which is the GPIO event generator made 
 
 11. Start Adelie and confirm clock replies and command stage notifications
 
-12. Apply a shared GPIO pulse and confirm Korora, Fairy, and Galapagos event records
+12. Apply a shared GPIO pulse and confirm Hub, node, and TTL generator event records
 
-13. Record the Korora serial stream for analysis
+13. Record the hub serial stream for analysis
 
 ## Expected startup records
 
-A healthy Korora stream begins with:
+A healthy Hub stream begins with:
 
 ```text
 SCHEMA,3
@@ -309,37 +309,37 @@ SCHEMA,3
 
 It then prints schema comments and a `READY` row.
 
-The Korora TTL input should report:
+The Hub TTL input should report:
 
 ```text
-TTL_INPUT_READY,korora,pin=44,timer=3,cc=0
+TTL_INPUT_READY,hub,pin=44,timer=3,cc=0
 TTL_TEST_CONFIG,lead_ms=300,period_ms=1000,width_us=100,ttl_input_pin=44
 ```
 
 Typical link activity includes:
 
 ```text
-LINK,galapagos,BLE,CENTRAL,SCANNING,galapagos,0,0
-LINK,galapagos,BLE,CENTRAL,CONNECTED,galapagos,10000,0
-LINK,galapagos,BLE,CENTRAL,SUBSCRIBED,galapagos,10000,0
+LINK,ttl_generator,BLE,CENTRAL,SCANNING,ttl_generator,0,0
+LINK,ttl_generator,BLE,CENTRAL,CONNECTED,ttl_generator,10000,0
+LINK,ttl_generator,BLE,CENTRAL,SUBSCRIBED,ttl_generator,10000,0
 ```
 
 Exact reason and interval values depend on the current firmware.
 
-Galapagos should report:
+TTL generator should report:
 
 ```text
-EVENT_CAPTURE_READY,galapagos,pin=43,gpiote_ch=0,grtc_ch=0
-TTL_OUTPUT_READY,galapagos,pin=44,gpiote_ch=1,set_grtc_ch=1,clear_grtc_ch=2
-BLE_ADVERTISING,galapagos
-READY,galapagos,1,40,HARDWARE_CAPTURE,event_pin=43,ttl_output_pin=44,grtc_ch=0
+EVENT_CAPTURE_READY,ttl_generator,pin=43,gpiote_ch=0,grtc_ch=0
+TTL_OUTPUT_READY,ttl_generator,pin=44,gpiote_ch=1,set_grtc_ch=1,clear_grtc_ch=2
+BLE_ADVERTISING,ttl_generator
+READY,ttl_generator,1,40,HARDWARE_CAPTURE,event_pin=43,ttl_output_pin=44,grtc_ch=0
 ```
 
 Channel values are allocated at runtime and can differ.
 
 ## Serial recording
 
-Korora normally appears as VCOM0 through the debugger interface.
+Hub normally appears as VCOM0 through the debugger interface.
 
 Use:
 
@@ -360,7 +360,7 @@ The analysis pipeline has three main stages.
 
 ### Parse
 
-`parse_sync_log.py` reads the Korora serial stream and the Adelie CSV files.
+`parse_sync_log.py` reads the hub serial stream and the Adelie CSV files.
 
 It produces normalized CSV files for pairs, synchronization rows, events, matches, diagnostics, links, faults, scheduled TTL records, and Adelie measurements.
 
@@ -379,7 +379,7 @@ It produces normalized CSV files for pairs, synchronization rows, events, matche
 - Event matching counts
 - Scheduled TTL generation error
 - Scheduled TTL acquisition error
-- Galapagos generated to Korora acquired offset
+- TTL generator generated to the hub acquired offset
 - Scheduled TTL completion and timeout counts
 - Adelie clock exchange RTT
 - Adelie rolling model quality
@@ -409,9 +409,9 @@ Useful plot groups include:
 
 ## Interpretation notes
 
-A positive adjacent interval error means the remote clock accumulated more nominal time than Korora during that interval.
+A positive adjacent interval error means the remote clock accumulated more nominal time than the hub during that interval.
 
-The firmware slope often has the opposite sign because it maps the faster remote clock back into the Korora domain.
+The firmware slope often has the opposite sign because it maps the faster remote clock back into the hub domain.
 
 Firmware RMS describes scatter of the points inside the active model window.
 
@@ -424,11 +424,11 @@ Transport age is not the synchronization error. It describes how old the capture
 For the scheduled TTL path:
 
 ```text
-generation error = converted Galapagos generated time minus target Korora time
-wire offset = Korora acquired time minus converted Galapagos generated time
-total error = Korora acquired time minus target Korora time
+generation error = converted TTL generator generated time minus target Hub time
+wire offset = Hub acquired time minus converted TTL generator generated time
+total error = Hub acquired time minus target Hub time
 ```
 
-`total_error_ns` is the main end to end result. `wire_offset_ns` contains fixed hardware path delay, signal threshold delay, timer reconstruction error, and remaining Galapagos to Korora clock model error. A negative value does not mean that electrical propagation occurred backwards in time.
+`total_error_ns` is the main end to end result. `wire_offset_ns` contains fixed hardware path delay, signal threshold delay, timer reconstruction error, and remaining TTL generator to the hub clock model error. A negative value does not mean that electrical propagation occurred backwards in time.
 
-Adelie one way latency values are estimates because they depend on a noisy host to Korora clock model and on path symmetry assumptions. End to end command RTT is the strongest Adelie latency measurement.
+Adelie one way latency values are estimates because they depend on a noisy host to the hub clock model and on path symmetry assumptions. End to end command RTT is the strongest Adelie latency measurement.

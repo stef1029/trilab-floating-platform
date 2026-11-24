@@ -12,9 +12,9 @@ from plot_sync import generate_plots
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Parse and analyse Korora serial and Adelie CSV data."
+        description="Parse and analyse Hub serial and Adelie CSV data."
     )
-    parser.add_argument("--korora", type=Path, help="Korora raw serial log")
+    parser.add_argument("--hub", type=Path, help="Hub raw serial log")
     parser.add_argument(
         "--adelie",
         nargs="+",
@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--node",
         default="all",
-        help="all or comma-separated nodes, e.g. fairy,galapagos,adelie",
+        help="all or comma-separated nodes, e.g. node,ttl_generator,adelie",
     )
     parser.add_argument(
         "--profile",
@@ -47,8 +47,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.korora is None and not args.adelie:
-        raise SystemExit("Provide at least one of --korora or --adelie")
+    if args.hub is None and not args.adelie:
+        raise SystemExit("Provide at least one of --hub or --adelie")
     if args.window < 3:
         raise SystemExit("--window must be at least 3")
 
@@ -57,7 +57,7 @@ def main() -> None:
     plots = args.output_root / "plots"
 
     manifest = parse_inputs(
-        korora=args.korora,
+        hub=args.hub,
         adelie=args.adelie,
         output=parsed,
     )
@@ -88,7 +88,7 @@ def main() -> None:
         print(f"Plot directory:    {plots}")
         print(f"Plot count:        {len(created)}")
     print(f"Summary rows:      {len(summary)}")
-    print(f"Korora events:     {manifest['counts']['events']}")
+    print(f"Hub events:     {manifest['counts']['events']}")
     print(f"Adelie samples:    {manifest['counts']['adelie_clock']}")
     print(f"Adelie commands:   {manifest['counts']['adelie_commands']}")
 

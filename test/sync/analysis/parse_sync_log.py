@@ -6,14 +6,15 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
+from legacy_names import modernise
 from typing import Any, Iterable
 
-DEFAULT_NODE = "fairy"
+DEFAULT_NODE = "node"
 NODE_ALIASES = {
-    "reward_port": "fairy",
-    "fairy": "fairy",
-    "galapagos": "galapagos",
-    "korora": "korora",
+    "reward_port": "node",
+    "node": "node",
+    "ttl_generator": "ttl_generator",
+    "hub": "hub",
     "adelie": "adelie",
 }
 KNOWN_NODES = set(NODE_ALIASES)
@@ -200,13 +201,13 @@ UNKNOWN_COLUMNS = [
 ADELIE_CLOCK_COLUMNS = [
     "sequence",
     "t1_adelie_ns",
-    "t2_korora_ticks",
-    "t3_korora_ticks",
+    "t2_hub_ticks",
+    "t3_hub_ticks",
     "t4_adelie_ns",
     "network_rtt_ns",
     "full_exchange_us",
     "midpoint_adelie_ns",
-    "midpoint_korora_ticks",
+    "midpoint_hub_ticks",
     "source_file",
 ]
 
@@ -222,29 +223,29 @@ ADELIE_COMMAND_COLUMNS = [
     "total_rtt_us",
     "ble_down_est_us",
     "ble_up_est_us",
-    "korora_rx_ticks",
+    "hub_rx_ticks",
     "i2c_tx_start_ticks",
-    "fairy_rx_hub_ticks",
-    "fairy_exec_hub_ticks",
-    "korora_ack_rx_ticks",
-    "korora_done_tx_ticks",
-    "korora_queue_to_i2c_us",
-    "korora_post_ack_us",
-    "fairy_model_valid",
+    "node_rx_hub_ticks",
+    "node_exec_hub_ticks",
+    "hub_ack_rx_ticks",
+    "hub_done_tx_ticks",
+    "hub_queue_to_i2c_us",
+    "hub_post_ack_us",
+    "node_model_valid",
     "i2c_down_us",
-    "fairy_action_us",
+    "node_action_us",
     "i2c_up_and_poll_us",
-    "korora_fairy_rtt_us",
-    "korora_internal_us",
+    "hub_node_rtt_us",
+    "hub_internal_us",
     "source_file",
 ]
 
 ADELIE_COMMAND_ALIASES = {
-    "reward_rx_hub_ticks": "fairy_rx_hub_ticks",
-    "reward_exec_hub_ticks": "fairy_exec_hub_ticks",
-    "reward_model_valid": "fairy_model_valid",
-    "reward_action_us": "fairy_action_us",
-    "korora_reward_rtt_us": "korora_fairy_rtt_us",
+    "reward_rx_hub_ticks": "node_rx_hub_ticks",
+    "reward_exec_hub_ticks": "node_exec_hub_ticks",
+    "reward_model_valid": "node_model_valid",
+    "reward_action_us": "node_action_us",
+    "hub_reward_rtt_us": "hub_node_rtt_us",
 }
 
 
@@ -462,7 +463,7 @@ def parse_event(
                 "local_ticks": parse_int(args[1]),
                 "local_hz": 16_000_000,
                 "hub_ticks": parse_int(args[2]),
-                "reference_node": "korora",
+                "reference_node": "hub",
                 "reference_event_id": parse_int(args[3]),
                 "reference_hub_ticks": parse_int(args[4]),
                 "error_ns": parse_int(args[5]),
@@ -547,7 +548,7 @@ def parse_ttl_record(
     record_type = fields[0]
     row: dict[str, Any] = {
         "record_type": record_type,
-        "node": "korora",
+        "node": "hub",
         "test_segment_id": test_segment_id,
         "sequence": "",
         "target_hub_ticks": "",
@@ -795,8 +796,10 @@ def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             return [], []
-        return [field.strip() for field in reader.fieldnames], [
-            dict(row) for row in reader
+        return [modernise(field.strip()) for field in reader.fieldnames], [
+            {modernise(key): modernise(value) if isinstance(value, str) else value
+             for key, value in row.items()}
+            for row in reader
         ]
 
 
@@ -804,9 +807,9 @@ def classify_adelie_csv(path: Path) -> str | None:
     fields, _ = read_csv_rows(path)
     names = set(fields)
 
-    if {"t1_adelie_ns", "t2_korora_ticks", "midpoint_korora_ticks"}.issubset(names):
+    if {"t1_adelie_ns", "t2_hub_ticks", "midpoint_hub_ticks"}.issubset(names):
         return "clock"
-    if {"total_rtt_us", "korora_rx_ticks", "korora_done_tx_ticks"}.issubset(names):
+    if {"total_rtt_us", "hub_rx_ticks", "hub_done_tx_ticks"}.issubset(names):
         return "commands"
     return None
 
@@ -907,7 +910,7 @@ def normalize_adelie_commands(path: Path | None) -> list[dict[str, Any]]:
     return normalized
 
 
-def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
+def parse_hub_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
     pairs: list[dict[str, Any]] = []
     sync_rows: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
@@ -930,7 +933,7 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
 
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for source_line, original_line in enumerate(handle, start=1):
-            raw = extract_record(original_line)
+            raw = extract_record(modernise(original_line))
             if raw is None:
                 continue
 
@@ -950,7 +953,7 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
                     status.append(
                         {
                             "record_type": "SCHEMA",
-                            "node": "korora",
+                            "node": "hub",
                             "fields": str(schema_version),
                             "source_line": source_line,
                             "raw_line": raw,
@@ -1086,19 +1089,19 @@ def parse_korora_log(path: Path) -> dict[str, list[dict[str, Any]] | int]:
 
 def parse_inputs(
     *,
-    korora: Path | None,
+    hub: Path | None,
     adelie: list[Path] | None,
     output: Path,
 ) -> dict[str, Any]:
-    if korora is None and not adelie:
-        raise ValueError("provide at least one of --korora or --adelie")
+    if hub is None and not adelie:
+        raise ValueError("provide at least one of --hub or --adelie")
 
     output.mkdir(parents=True, exist_ok=True)
 
-    if korora is not None:
-        if not korora.exists():
-            raise FileNotFoundError(korora)
-        parsed = parse_korora_log(korora)
+    if hub is not None:
+        if not hub.exists():
+            raise FileNotFoundError(hub)
+        parsed = parse_hub_log(hub)
     else:
         parsed = {
             "schema_version": 0,
@@ -1160,8 +1163,8 @@ def parse_inputs(
     )
 
     manifest = {
-        "korora_input": str(korora.resolve()) if korora is not None else None,
-        "korora_schema_version": parsed["schema_version"],
+        "hub_input": str(hub.resolve()) if hub is not None else None,
+        "hub_schema_version": parsed["schema_version"],
         "adelie_clock_input": (
             str(clock_path.resolve()) if clock_path is not None else None
         ),
@@ -1193,18 +1196,18 @@ def parse_inputs(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=("Parse a Korora serial log and Adelie clock/latency CSV files.")
+        description=("Parse a Hub serial log and Adelie clock/latency CSV files.")
     )
     parser.add_argument(
         "legacy_input",
         nargs="?",
         type=Path,
-        help="legacy positional alias for --korora",
+        help="legacy positional alias for --hub",
     )
     parser.add_argument(
-        "--korora",
+        "--hub",
         type=Path,
-        help="Korora raw serial log",
+        help="Hub raw serial log",
     )
     parser.add_argument(
         "--adelie",
@@ -1226,11 +1229,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    korora = args.korora or args.legacy_input
+    hub = args.hub or args.legacy_input
 
     try:
         manifest = parse_inputs(
-            korora=korora,
+            hub=hub,
             adelie=args.adelie,
             output=args.output,
         )
@@ -1238,11 +1241,11 @@ def main() -> None:
         raise SystemExit(str(error)) from error
 
     counts = manifest["counts"]
-    print(f"Korora PAIR_RAW records: {counts['pairs']}")
-    print(f"Korora SYNC records:     {counts['sync']}")
-    print(f"Korora EVENT records:    {counts['events']}")
-    print(f"Korora EVENT_MATCH rows: {counts['event_matches']}")
-    print(f"Korora TTL records:      {counts['ttl_records']}")
+    print(f"Hub PAIR_RAW records: {counts['pairs']}")
+    print(f"Hub SYNC records:     {counts['sync']}")
+    print(f"Hub EVENT records:    {counts['events']}")
+    print(f"Hub EVENT_MATCH rows: {counts['event_matches']}")
+    print(f"Hub TTL records:      {counts['ttl_records']}")
     print(f"Adelie clock samples:    {counts['adelie_clock']}")
     print(f"Adelie command rows:     {counts['adelie_commands']}")
     print(f"Parse failures:          {counts['unknown']}")

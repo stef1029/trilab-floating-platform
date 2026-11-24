@@ -2,26 +2,23 @@
 #include <cstdint>
 #include <cstring>
 
-#include "fairy_shared/adelie_protocol.hpp"
-#include "fairy_shared/clock_model.hpp"
-#include "fairy_shared/fairy_protocol.hpp"
-#include "fairy_shared/magellan_protocol.hpp"
-#include "fairy_shared/system_config.hpp"
-#include "fairy_shared/tlv.hpp"
-#include "fairy_shared/transport.hpp"
+#include "rig_protocol/command_protocol.hpp"
+#include "rig_protocol/clock_model.hpp"
+#include "rig_protocol/record_protocol.hpp"
+#include "rig_protocol/discovery_protocol.hpp"
+#include "rig_protocol/system_config.hpp"
+#include "rig_protocol/tlv.hpp"
+#include "rig_protocol/transport.hpp"
 
 int main() {
-  using namespace fairy;
+  using namespace rig;
 
-  static_assert(config::max_fairies == 6);
-  static_assert(config::necneven_address == config::korora_address);
-  static_assert(config::hecate_address == config::adelie_address);
-  static_assert(config::will_o_wisp_address == 0x20);
+  static_assert(config::max_nodes == 5);
   static_assert(static_cast<std::uint16_t>(protocol::Opcode::set_illumination) ==
                 0x0206);
-  static_assert(static_cast<std::uint16_t>(protocol::Opcode::scry_stream) ==
+  static_assert(static_cast<std::uint16_t>(protocol::Opcode::scales_stream) ==
                 0x0500);
-  static_assert(static_cast<std::uint16_t>(protocol::RecordType::scry_sample) ==
+  static_assert(static_cast<std::uint16_t>(protocol::RecordType::scales_sample) ==
                 0x0603);
 
   std::uint8_t tlv_bytes[64]{};
@@ -38,7 +35,7 @@ int main() {
   record_header.timestamp_ticks = 123456789;
   record_header.clock_hz = 16'000'000;
 
-  std::uint8_t record[protocol::fairy_max_record_size]{};
+  std::uint8_t record[protocol::max_record_size]{};
   const std::size_t record_size = protocol::encode_record(
       record_header, tlv_bytes, tlv.size(), record, sizeof(record));
   assert(record_size != 0);
@@ -49,7 +46,7 @@ int main() {
   assert(record_view.header.type == protocol::RecordType::ttl_generated);
 
   transport::Header link_header;
-  link_header.channel = transport::Channel::fairy;
+  link_header.channel = transport::Channel::record;
   link_header.flags = transport::first_fragment | transport::last_fragment;
   link_header.source = 0x10;
   link_header.destination = 0x03;
@@ -145,12 +142,12 @@ int main() {
   command_header.command_id = 99;
   command_header.session_id = 5;
 
-  std::uint8_t command[protocol::adelie_max_message_size]{};
-  const std::size_t command_size = protocol::encode_adelie(
+  std::uint8_t command[protocol::command_max_message_size]{};
+  const std::size_t command_size = protocol::encode_command(
       command_header, tlv_bytes, tlv.size(), command, sizeof(command));
-  protocol::AdelieMessageView command_view;
+  protocol::CommandMessageView command_view;
   assert(command_size != 0);
-  assert(protocol::decode_adelie(command, command_size, command_view));
+  assert(protocol::decode_command(command, command_size, command_view));
   assert(command_view.header.command_id == 99);
   assert(protocol::record_visible_at(protocol::RecordType::light_gate,
                                      protocol::TelemetryLevel::critical));
@@ -171,18 +168,18 @@ int main() {
   std::uint8_t assignment_payload[16]{};
   const std::size_t assignment_size = protocol::encode_assignment(
       assignment, assignment_payload, sizeof(assignment_payload));
-  protocol::MagellanHeader magellan_header;
-  magellan_header.type = protocol::MagellanType::assign;
-  magellan_header.nonce = 456;
-  std::uint8_t magellan[48]{};
-  const std::size_t magellan_size =
-      protocol::encode_magellan(magellan_header, assignment_payload,
-                                assignment_size, magellan, sizeof(magellan));
-  protocol::MagellanView magellan_view;
+  protocol::DiscoveryHeader discovery_header;
+  discovery_header.type = protocol::DiscoveryType::assign;
+  discovery_header.nonce = 456;
+  std::uint8_t discovery[48]{};
+  const std::size_t discovery_size =
+      protocol::encode_discovery(discovery_header, assignment_payload,
+                                assignment_size, discovery, sizeof(discovery));
+  protocol::DiscoveryView discovery_view;
   protocol::Assignment decoded_assignment;
-  assert(protocol::decode_magellan(magellan, magellan_size, magellan_view));
-  assert(protocol::decode_assignment(magellan_view.payload,
-                                     magellan_view.header.payload_length,
+  assert(protocol::decode_discovery(discovery, discovery_size, discovery_view));
+  assert(protocol::decode_assignment(discovery_view.payload,
+                                     discovery_view.header.payload_length,
                                      decoded_assignment));
   assert(decoded_assignment.uuid == uuid);
   assert(decoded_assignment.address == 0x10);

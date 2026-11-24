@@ -507,40 +507,40 @@ def _plot_command_stages(commands: list[dict[str, str]], output: Path, outputs: 
 
     origin = min(int(row["sent_monotonic_ns"]) for row in rows)
 
-    korora_columns = [
-        ("korora_receive_to_queue_us", "Korora receive to response queue"),
-        ("korora_queue_to_tx_start_us", "Korora response queue wait"),
-        ("korora_notify_duration_us", "Korora BLE notification duration"),
+    hub_columns = [
+        ("hub_receive_to_queue_us", "Hub receive to response queue"),
+        ("hub_queue_to_tx_start_us", "Hub response queue wait"),
+        ("hub_notify_duration_us", "Hub BLE notification duration"),
     ]
-    korora_rows = [
+    hub_rows = [
         row
         for row in rows
-        if any(row.get(column) for column, _ in korora_columns)
+        if any(row.get(column) for column, _ in hub_columns)
     ]
-    if korora_rows:
+    if hub_rows:
         values = [
             float(row[column])
-            for row in korora_rows
-            for column, _ in korora_columns
+            for row in hub_rows
+            for column, _ in hub_columns
             if row.get(column)
         ]
         divisor, unit = _time_units(values)
         fig, axes = plt.subplots(3, 1, figsize=(
             12, 9), sharex=True, constrained_layout=True)
         opcodes = sorted(
-            {row.get("opcode") or "unknown" for row in korora_rows})
+            {row.get("opcode") or "unknown" for row in hub_rows})
         colors = {opcode: color for opcode,
                   color in zip(opcodes, cycle(COLORS))}
-        for axis, (column, title) in zip(axes, korora_columns):
+        for axis, (column, title) in zip(axes, hub_columns):
             summary_values = [
                 float(row[column]) / divisor
-                for row in korora_rows
+                for row in hub_rows
                 if row.get(column)
             ]
             for opcode in opcodes:
                 selected = [
                     row
-                    for row in korora_rows
+                    for row in hub_rows
                     if (row.get("opcode") or "unknown") == opcode
                     and row.get(column)
                 ]
@@ -558,7 +558,7 @@ def _plot_command_stages(commands: list[dict[str, str]], output: Path, outputs: 
             _plain(axis)
         axes[-1].set_xlabel("Elapsed time (s)")
         axes[0].legend(frameon=False, ncol=min(4, len(opcodes)))
-        _save(fig, output, "command_korora_stage_timing.png", outputs)
+        _save(fig, output, "command_hub_stage_timing.png", outputs)
 
     clock = [row for row in rows if row.get(
         "opcode") == "clock_exchange" and row.get("clock_full_exchange_us")]
@@ -580,9 +580,9 @@ def _plot_command_stages(commands: list[dict[str, str]], output: Path, outputs: 
                         1e9 for row in process_rows], processing, s=20, color=COLORS[3])
         axes[1].scatter([(int(row["sent_monotonic_ns"]) - origin) /
                         1e9 for row in network_rows], network, s=20, color=COLORS[0])
-        axes[0].set(title="Korora clock exchange processing",
+        axes[0].set(title="Hub clock exchange processing",
                     ylabel="t3 minus t2 (µs)")
-        axes[1].set(title="Clock exchange outside Korora processing", xlabel="Elapsed time (s)",
+        axes[1].set(title="Clock exchange outside Hub processing", xlabel="Elapsed time (s)",
                     ylabel=f"Full exchange minus processing ({network_unit})")
         _annotate_summary(axes[0], processing, "µs")
         _annotate_summary(axes[1], network, network_unit)
@@ -676,7 +676,7 @@ def _plot_command_groups(commands: list[dict[str, str]], results: list[dict[str,
         ]
         fig, ax = plt.subplots(figsize=(10, 5.5), constrained_layout=True)
         _poster_boxplot(ax, grouped, nodes)
-        ax.set(title="Command result event arrival by logical Fairy",
+        ax.set(title="Command result event arrival by logical node",
                xlabel="Logical node", ylabel=f"Command send to result event ({unit})")
         _annotate_summary(
             ax, [value for group in grouped for value in group], unit
@@ -974,7 +974,7 @@ def _plot_ttl(rows: list[dict[str, str]], output: Path, outputs: list[Path]) -> 
         timeline.legend(frameon=False)
 
     timeline.axhline(0, color=PALETTE["muted"], linewidth=1, alpha=0.8)
-    timeline.set(title="Galapagos TTL alignment",
+    timeline.set(title="TTL generator TTL alignment",
                  xlabel="TTL sequence", ylabel="Capture minus target (µs)")
     distribution.hist(values, bins=min(45, max(8, len(values) // 3)),
                       color=COLORS[2], alpha=0.75,
@@ -1147,8 +1147,8 @@ def _plot_counter_deltas(
         row
         for row in anomalies
         if row.get("category") == "record_loss_burst"
-        and row.get("metric") in {"dropped_records", "korora_ble_dropped"}
-        and row.get("source_node") in {"korora", "adelie_host"}
+        and row.get("metric") in {"dropped_records", "hub_ble_dropped"}
+        and row.get("source_node") in {"hub", "adelie_host"}
     ]
     if any(row.get("source_node") == "adelie_host" for row in drop_bursts):
         drop_bursts = [
@@ -1160,7 +1160,7 @@ def _plot_counter_deltas(
         starts = [float(row["start_s"]) for row in drop_bursts]
         deltas = [float(row["delta"]) for row in drop_bursts]
         axes[0].scatter(starts, deltas, s=55, color=COLORS[5])
-        axes[0].set(title="Korora BLE outbound drop bursts",
+        axes[0].set(title="Hub BLE outbound drop bursts",
                     xlabel="Elapsed time (s)", ylabel="Records dropped")
         _annotate_summary(axes[0], deltas, "records")
         for axis, period, key in (
@@ -1172,7 +1172,7 @@ def _plot_counter_deltas(
             axis.set(title=f"Drop burst phase within {period:g} s period",
                      xlabel="Phase (s)", ylabel="Records dropped", xlim=(0, period))
             _annotate_summary(axis, deltas, "records")
-        _save(fig, output, "korora_drop_burst_periodicity.png", outputs)
+        _save(fig, output, "hub_drop_burst_periodicity.png", outputs)
 
 
 def _plot_host_transport(
@@ -1213,7 +1213,7 @@ def _plot_host_transport(
     _annotate_summary(axes[1], throughput_values, "bytes/s")
 
     error_metrics = ("rx_decode_errors", "rx_reassembly_errors",
-                     "rx_address_errors", "tx_write_errors", "korora_ble_dropped")
+                     "rx_address_errors", "tx_write_errors", "hub_ble_dropped")
     error_values: list[float] = []
     for color, metric in zip(cycle(COLORS), error_metrics):
         selected = [row for row in host_delta if row.get("metric") == metric]
@@ -1221,7 +1221,7 @@ def _plot_host_transport(
             error_values.extend(float(row["rate_per_s"]) for row in selected)
             axes[2].plot([float(row["elapsed_s"]) for row in selected], [float(
                 row["rate_per_s"]) for row in selected], color=color, linewidth=1.2, label=metric)
-    axes[2].set(title="Host BLE and Korora outbound errors",
+    axes[2].set(title="Host BLE and the hub outbound errors",
                 ylabel="New errors/s")
     axes[2].legend(frameon=False, ncol=3)
     _annotate_summary(axes[2], error_values, "errors/s")
@@ -1236,7 +1236,7 @@ def _plot_host_transport(
             clock_values.extend(item[1] / 1000 for item in selected)
             axes[3].plot([item[0] for item in selected], [
                          item[1] / 1000 for item in selected], color=color, linewidth=1.25, label=column)
-    axes[3].set(title="Adelie to Korora clock exchange",
+    axes[3].set(title="Adelie to the hub clock exchange",
                 xlabel="Elapsed time (s)", ylabel="Time (ms)")
     axes[3].legend(frameon=False, ncol=3)
     _annotate_summary(axes[3], clock_values, "ms")
@@ -1359,10 +1359,10 @@ def _plot_ttl_completeness(
     if not rows:
         return
     stages = (
-        "target_korora_ticks",
+        "target_hub_ticks",
         "generated_local_ticks",
-        "generated_korora_ticks",
-        "captured_korora_ticks",
+        "generated_hub_ticks",
+        "captured_hub_ticks",
         "total_error_ns",
     )
     counts = [sum(1 for row in rows if row.get(stage)) for stage in stages]
@@ -1393,7 +1393,7 @@ def _plot_ttl_completeness(
         axes[2].scatter([item[0] for item in generation], [item[1]
                         for item in generation], s=20, color=COLORS[4])
         axes[2].axhline(0, color=PALETTE["muted"], linewidth=0.9, alpha=0.8)
-        axes[2].set(title="Galapagos generation error",
+        axes[2].set(title="TTL generator generation error",
                     xlabel="TTL sequence", ylabel="Generated minus target (µs)")
         _annotate_summary(
             axes[2], [item[1] for item in generation], "µs", signed=True
@@ -1407,7 +1407,7 @@ def _plot_ttl_completeness(
     if capture_latency:
         axes[3].scatter([item[0] for item in capture_latency], [item[1]
                         for item in capture_latency], s=20, color=COLORS[3])
-        axes[3].set(title="Generated pulse to Korora capture",
+        axes[3].set(title="Generated pulse to the hub capture",
                     xlabel="TTL sequence", ylabel="Capture minus generated (µs)")
         _annotate_summary(
             axes[3], [item[1] for item in capture_latency], "µs"
@@ -1625,13 +1625,13 @@ def create_plots(parsed_directory: Path, output_directory: Path | None = None) -
     _plot_anomaly_zooms(anomalies, timeseries, output_directory, outputs)
     descriptions = {
         "verification_anomaly_overview.png": "All automatically detected anomaly intervals on one timeline",
-        "korora_drop_burst_periodicity.png": "Korora outbound drop bursts and their phase against rollover candidates",
+        "hub_drop_burst_periodicity.png": "Hub outbound drop bursts and their phase against rollover candidates",
         "counter_increment_diagnostics.png": "Counter increments and rates instead of misleading cumulative totals",
         "record_gap_timeline_and_cdf.png": "Per node record silences and their distribution",
         "longest_record_silences.png": "The longest periods with no record from each logical node",
         "host_ble_full_diagnostics.png": "Adelie BLE queue, inactivity, throughput, errors and clock exchange state",
         "verification_metric_correlations.png": "Strongest relationships between aligned one second metrics",
-        "record_rate_matrix.png": "Record cadence by logical node and Fairy record type",
+        "record_rate_matrix.png": "Record cadence by logical node and record type",
         "clock_and_delivery_continuity.png": "Distinguishes a device clock stop or reset from delayed BLE delivery",
         "command_rtt_cdf_and_histogram.png": "Full command latency distribution by opcode",
         "sync_quality_distributions.png": "Per node synchronization RMS and skew distributions",

@@ -1,5 +1,5 @@
 """
-Fit one shared sinusoidal period to Fairy clock-rate variation across many logs.
+Fit one shared sinusoidal period to node clock-rate variation across many logs.
 
 Each log is an independently started recording, so one absolute phase cannot be
 shared unless the recordings have a common external time reference. The model is:
@@ -46,6 +46,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from legacy_names import modernise
 from typing import Iterable
 
 import matplotlib.pyplot as plt
@@ -59,8 +60,8 @@ MIN_PERIOD_SECONDS_DEFAULT = 40.0
 MAX_PERIOD_FACTOR_DEFAULT = 2.0
 
 NODE_ALIASES = {
-    "reward_port": "fairy",
-    "fairy": "fairy",
+    "reward_port": "node",
+    "node": "node",
 }
 
 RECORD_PATTERN = re.compile(r"([A-Z][A-Z0-9_]*),")
@@ -176,14 +177,14 @@ def node_and_base(fields: list[str]) -> tuple[str, int]:
         SYNC,1,...
 
     New records include it:
-        PAIR_RAW,fairy,1,...
+        PAIR_RAW,node,1,...
         SYNC,reward_port,1,...
     """
     if len(fields) < 2:
-        return "fairy", 1
+        return "node", 1
 
     if is_int(fields[1]):
-        return "fairy", 1
+        return "node", 1
 
     return normalize_node(fields[1]), 2
 
@@ -199,7 +200,7 @@ def parse_log(
 
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for source_line, original_line in enumerate(handle, start=1):
-            record = extract_record(original_line)
+            record = extract_record(modernise(original_line))
             if record is None:
                 continue
 
@@ -1176,13 +1177,13 @@ def preview_log_fit(
     cycles = duration / shared_period_s
 
     axis.set_title(
-        f"{log.path.name}: shared Fairy period\n"
+        f"{log.path.name}: shared node period\n"
         f"observed cycles={cycles:.3f}, "
         f"trend-baseline improvement={100.0 * item.improvement_fraction:.1f}%, "
         f"smoothed R²={item.r_squared_smoothed:.3f}"
     )
     axis.set_xlabel("Elapsed time within recording (s)")
-    axis.set_ylabel("Fairy clock-rate error (ppm)")
+    axis.set_ylabel("Node clock-rate error (ppm)")
     axis.grid(True, alpha=0.3)
     axis.legend()
     figure.tight_layout()
@@ -1315,7 +1316,7 @@ def preview_phase_folded(
         label="Shared sinusoidal shape",
     )
 
-    axis.set_title("Phase-folded Fairy clock-rate variation at the shared period")
+    axis.set_title("Phase-folded node clock-rate variation at the shared period")
     axis.set_xlabel("Fitted phase within cycle (rad)")
     axis.set_ylabel("Detrended rate / fitted amplitude")
     axis.grid(True, alpha=0.3)
@@ -1326,7 +1327,7 @@ def preview_phase_folded(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Fit one shared sinusoidal period to Fairy clock-rate variation "
+            "Fit one shared sinusoidal period to node clock-rate variation "
             "across all .log files in a folder."
         )
     )
@@ -1343,8 +1344,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--node",
-        default="fairy",
-        help="Node to analyse; reward_port is treated as fairy",
+        default="node",
+        help="Node to analyse; reward_port is treated as node",
     )
     parser.add_argument(
         "--source",

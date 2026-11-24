@@ -27,7 +27,7 @@ def handle_stop(signum: int, frame: object) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Record Korora serial output using explicit 8N1."
+        description="Record Hub serial output using explicit 8N1."
     )
     parser.add_argument(
         "port",
@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def open_korora_serial(port: str, baud: int) -> serial.Serial:
+def open_hub_serial(port: str, baud: int) -> serial.Serial:
     device = serial.Serial(
         port=port,
         baudrate=baud,
@@ -142,7 +142,7 @@ def main() -> None:
                 break
 
             try:
-                device = open_korora_serial(args.port, args.baud)
+                device = open_hub_serial(args.port, args.baud)
             except TypeError:
                 # Some pyserial backends do not implement exclusive=.
                 try:

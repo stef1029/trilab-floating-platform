@@ -103,11 +103,11 @@ class LocalSensorState:
 class TtlStats:
     session_id: int
     sequence: int
-    target_korora_ticks: int | None = None
+    target_hub_ticks: int | None = None
     generated_target_local_ticks: int | None = None
     generated_local_ticks: int | None = None
-    generated_korora_ticks: int | None = None
-    captured_korora_ticks: int | None = None
+    generated_hub_ticks: int | None = None
+    captured_hub_ticks: int | None = None
     output_error_us: float = math.nan
     input_error_us: float = math.nan
     loop_delay_us: float = math.nan
@@ -118,25 +118,25 @@ class TtlStats:
     def recompute(self) -> None:
         tick_us = 1_000_000 / COMMON_TIMER_HZ
         if (
-            self.target_korora_ticks is not None
-            and self.generated_korora_ticks is not None
+            self.target_hub_ticks is not None
+            and self.generated_hub_ticks is not None
         ):
             self.output_error_us = (
-                self.generated_korora_ticks - self.target_korora_ticks
+                self.generated_hub_ticks - self.target_hub_ticks
             ) * tick_us
         if (
-            self.target_korora_ticks is not None
-            and self.captured_korora_ticks is not None
+            self.target_hub_ticks is not None
+            and self.captured_hub_ticks is not None
         ):
             self.input_error_us = (
-                self.captured_korora_ticks - self.target_korora_ticks
+                self.captured_hub_ticks - self.target_hub_ticks
             ) * tick_us
         if (
-            self.generated_korora_ticks is not None
-            and self.captured_korora_ticks is not None
+            self.generated_hub_ticks is not None
+            and self.captured_hub_ticks is not None
         ):
             self.loop_delay_us = (
-                self.captured_korora_ticks - self.generated_korora_ticks
+                self.captured_hub_ticks - self.generated_hub_ticks
             ) * tick_us
 
 
@@ -157,7 +157,7 @@ class ClockExchange:
         return (self.t1_ns + self.t4_ns) / 2.0
 
     @property
-    def korora_midpoint_ticks(self) -> float:
+    def hub_midpoint_ticks(self) -> float:
         return (self.t2_ticks + self.t3_ticks) / 2.0
 
 
@@ -185,9 +185,9 @@ class HostClockModel:
 
         values = list(self._samples)
         x_ref = values[-1].host_midpoint_ns
-        y_ref = values[-1].korora_midpoint_ticks
+        y_ref = values[-1].hub_midpoint_ticks
         xs = [value.host_midpoint_ns - x_ref for value in values]
-        ys = [value.korora_midpoint_ticks - y_ref for value in values]
+        ys = [value.hub_midpoint_ticks - y_ref for value in values]
         x_mean = statistics.fmean(xs)
         y_mean = statistics.fmean(ys)
         denominator = sum((value - x_mean) ** 2 for value in xs)
@@ -199,7 +199,7 @@ class HostClockModel:
         relative_intercept = y_mean - slope * x_mean
         intercept = y_ref + relative_intercept - slope * x_ref
         residual_ns = [
-            ((intercept + slope * value.host_midpoint_ns) - value.korora_midpoint_ticks)
+            ((intercept + slope * value.host_midpoint_ns) - value.hub_midpoint_ticks)
             / slope
             for value in values
         ]

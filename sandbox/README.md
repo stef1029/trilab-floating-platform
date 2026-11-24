@@ -14,11 +14,11 @@ Rebuilding the system one layer at a time. Nothing here is used by
 
 ### Planned
 
-5. **Adelie v2** — TLV payloads instead of `[opcode, value]`
-6. **Magellan** — discovery and address assignment
+5. **Command v2** — TLV payloads instead of `[opcode, value]`
+6. **Discovery** — discovery and address assignment
 7. **Timer + SYNC** — TIMER2 → PPI → GPIOTE, hardware-timed pulses
 8. **Clock model** — SYNC capture, pairing, the affine fit
-9. **Galapagos** — second BLE link, anchor points, TTL
+9. **TTL generator** — second BLE link, anchor points, TTL
 
 ## The `sb` script
 
@@ -29,7 +29,7 @@ Rebuilding the system one layer at a time. Nothing here is used by
 ./sb stm32       01-blink/stm32         NUCLEO-G071RB
 ./sb ble         02-ble/peripheral      nRF52840 DK
 ./sb bridge      03-protocol/bridge     nRF52840 DK
-./sb fairy       03-protocol/fairy      NUCLEO-G071RB
+./sb node       03-protocol/reward_port      NUCLEO-G071RB
 ```
 
 It wraps the toolchains so neither needs to be on `PATH`. Raw commands below
