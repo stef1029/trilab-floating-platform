@@ -25,8 +25,10 @@ inline constexpr std::uint8_t unassigned_address = 0x00;
 inline constexpr std::uint8_t hub_address = 0x01;
 inline constexpr std::uint8_t ttl_generator_address = 0x02;
 inline constexpr std::uint8_t host_address = 0x03;
+/* Node N (flashed into the board, see node_identity.hpp) is always
+ * node_address(N). 0x80 onward were temporary discovery addresses and are
+ * no longer used. */
 inline constexpr std::uint8_t node_address_base = 0x10;
-inline constexpr std::uint8_t discovery_address_base = 0x80;
 inline constexpr std::uint8_t broadcast_address = 0xFF;
 
 inline constexpr std::uint32_t common_timer_hz = 16'000'000;
@@ -37,18 +39,9 @@ inline constexpr std::uint8_t node_address(std::size_t zero_based_slot) {
   return static_cast<std::uint8_t>(node_address_base + zero_based_slot);
 }
 
-inline constexpr std::uint8_t discovery_address(std::size_t zero_based_slot) {
-  return static_cast<std::uint8_t>(discovery_address_base + zero_based_slot);
-}
-
 inline constexpr bool is_node_address(std::uint8_t address) {
   return address >= node_address_base &&
          address < node_address_base + max_nodes;
-}
-
-inline constexpr bool is_discovery_address(std::uint8_t address) {
-  return address >= discovery_address_base &&
-         address < discovery_address_base + max_nodes;
 }
 
 } // namespace rig::config

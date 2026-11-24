@@ -1,5 +1,7 @@
 # discovery protocol v1
 
+> **Retired.** Node boards are now numbered when they are flashed and always use address `0x10 + number`; see [node identity v1](node_identity_v1.md). The only message still sent is the hub's boot-time **release**, which now means "hub restarted: make outputs safe" and no longer clears a node's address. The rest of this document describes the old discovery scheme and is kept for reference.
+
 Discovery assigns temporary and logical RS485 addresses without requiring boards to power up one at a time. Every node uses the 96 bit STM32 factory identifier as its UUID.
 
 ## Header

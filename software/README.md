@@ -24,7 +24,7 @@ whichever mode was used last; `adelie --simple` or `adelie --dev` forces one.
 - *Link & clock*: BLE link, RS485 gateway counters, host clock exchange
 - *TTL & sync*: telemetry level, sync test, TTL train and loop timing
 - *Hub sensors & power*: IMU, magnetometer, live pose, nPM1300, status LEDs
-- *Board setup*: the UUID to node index table (see below)
+- *Board setup*: which node numbers the rig uses, and port labels (see below)
 
 Code layout: `adelie/controller.py` talks to the hardware, `adelie/health.py`
 turns its state into the health summary (no Qt, unit tested), and
@@ -37,7 +37,7 @@ turns its state into the health summary (no Qt, unit tested), and
 - Modern PySide6 interface
 - One live card per Hub, TTL generator, and node
 - Live RMS history, skew, record rate, queue, loss, and RSSI
-- Exact UUID configuration saved as JSON
+- Node numbers and port labels saved as JSON
 - White LED board identification
 - RGB, IR, tone, white noise, and valve controls
 - Telemetry level selection
@@ -76,25 +76,27 @@ python -m pytest
 
 ## Board configuration
 
-Board setup lives in Developer › Board setup. Simple mode shows
-"Board setup needed" when the live boards do not match the saved set.
+Every node board is given its number (0 to 4) when it is flashed, with
+`firmware/reward_port/scripts/flash.py --id N`, and node N always uses
+RS485 address `0x10 + N`. Write the number on the board. There is nothing to
+assign in Adelie and nothing for the hub to discover.
 
-Adelie requests the full live inventory after BLE connects.
+Board setup lives in Developer › Board setup. It lists every node number
+with whether the hub can see it and the board's UUID (information only). To
+configure the rig:
 
-When the saved UUID set matches exactly, Adelie sends the saved node indices
-to the hub. When it differs, the table remains in configuration mode.
+1. Tick the node numbers this rig uses
+2. Optionally press White LED to find a board and give its port a label
+3. Save
 
-To create a configuration:
+`config/boards.json` stores the ticked numbers and labels. Without the file,
+Adelie uses every node number, unlabelled. Older files that also mapped
+UUIDs still load; the UUIDs are ignored.
 
-1. Click White LED on one row
-2. Find the board showing white
-3. Enter its zero based node index and label
-4. Repeat for every row
-5. Save the exact UUID configuration
-
-The JSON file is the backup. Hub stores no assignment across a power cycle.
-
-If any live UUID is added, missing, or replaced, automatic assignment stops.
+Every ticked node must be present and synchronised before Record Start is
+enabled. A board the hub sees that is not ticked is shown as unconfigured but
+does not block recording. Adelie sends each node its valve limits whenever it
+appears or restarts.
 
 ## Recording
 
@@ -103,7 +105,7 @@ and refuses to overwrite an existing file.
 
 Each line is one JSON value. The file contains:
 
-- Header with protocol versions and UUID mapping
+- Header with protocol versions, node numbers, labels and board UUIDs
 - Every record received during the session
 - Raw application message in Base64
 - Host monotonic receive time
@@ -113,8 +115,8 @@ Nothing is written before Record Start. An unexpected BLE disconnect closes
 the file with a footer when the process still has control.
 
 Record Stop keeps the writer open briefly after the stop response so final
-output off records can arrive. A node inventory change or a critical hardware
-fault requests the same orderly stop.
+output off records can arrive. A ticked node disconnecting or restarting, or
+a critical hardware fault, requests the same orderly stop.
 
 ## Telemetry
 

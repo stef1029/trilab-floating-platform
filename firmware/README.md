@@ -22,7 +22,8 @@ Adelie, the host application, keeps its name.
 | ------------- | -------------------------------------------------------------- | --------------- |
 | **Record**    | boards → host: timestamped telemetry and event records         | Fairy           |
 | **Command**   | host → boards: commands and their responses                    | Adelie          |
-| **Discovery** | hub ↔ nodes: finding boards on RS485 and assigning addresses   | Magellan        |
+| **Node identity** | node boards: the node number flashed into each board, which fixes its RS485 address | — |
+| **Discovery** | retired; only the hub's boot-time "make outputs safe" message remains | Magellan        |
 | **Transport** | frames over UART / RS485 and BLE                               | —               |
 
 The shared C++ library is `rig_protocol` (namespace `rig`), formerly
@@ -42,13 +43,13 @@ flowchart TD
     G -->|"TTL loopback"| K
 ```
 
-The hub is the time authority and the only RS485 bus master. TTL generator creates scheduled TTL pulses. Node boards capture light gate and SYNC edges and drive the local outputs. Adelie assigns board names, sends commands, displays live quality, and writes experiment records.
+The hub is the time authority and the only RS485 bus master. TTL generator creates scheduled TTL pulses. Node boards capture light gate and SYNC edges and drive the local outputs. Adelie names the ports, sends commands, displays live quality, and writes experiment records.
 
 All machine data uses one of these application protocols:
 
 - Record v3 for records
 - Command v2 for commands and responses
-- Discovery v1 for discovery and address assignment
+- Node identity v1 for each node board's flashed number (`docs/protocols/node_identity_v1.md`)
 
 The application messages always use Transport v1 on BLE or RS485. Human debug text is isolated in each `debug_log` module and is never parsed by the system.
 
@@ -108,25 +109,23 @@ adelie
 
 ## Initial setup
 
-1. Power Hub, TTL generator, and all node boards
-2. Start Adelie and connect to the hub
-3. Wait for the complete UUID inventory
-4. Use White LED to identify each board
-5. Give each UUID a unique zero based node index
-6. Save the exact configuration
-7. Wait for every clock model to become valid
-8. Choose a new `.log` path
-9. Press Record Start
+1. Flash each node board with its number, once: `python reward_port/scripts/flash.py --id N` (0 to 4), and write the number on the board
+2. Power Hub, TTL generator, and all node boards, in any order
+3. Start Adelie and connect to the hub
+4. In Developer › Board setup, tick the node numbers this rig uses, label the ports if wanted, and save
+5. Wait for every clock model to become valid
+6. Choose a new `.log` path
+7. Press Record Start
 
-Adelie applies saved assignments automatically only when the complete discovered UUID set exactly matches the saved set. A missing, added, or replaced board returns the user to configuration.
+Node N always uses RS485 address `0x10 + N`, so there is no discovery or assignment step. A replacement board just needs the same number flashed into it.
 
 ## Run behavior
 
-Hub starts discovery, health checks, RS485 polling, and SYNC without Adelie. It does not save experiment data.
+Hub starts polling every node slot, health checks, and SYNC without Adelie. It does not save experiment data.
 
-Record Start creates a session on every board. An unexpected Adelie disconnect ends that session and turns controlled outputs safe. Discovery, SYNC, and health work continue until power is removed.
+Record Start creates a session on every board. An unexpected Adelie disconnect ends that session and turns controlled outputs safe. Polling, SYNC, and health work continue until power is removed.
 
-A node communication timeout or a TTL generator disconnect also ends the complete session. The fault is sent to Adelie before the remaining boards are stopped.
+A node communication timeout, a node restart, or a TTL generator disconnect also ends the complete session. The fault is sent to Adelie before the remaining boards are stopped.
 
 Critical records are always forwarded. Standard mode adds health and clock quality. Full mode adds raw SYNC observations and clock pairs.
 

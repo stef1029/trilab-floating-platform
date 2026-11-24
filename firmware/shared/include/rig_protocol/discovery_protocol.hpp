@@ -4,25 +4,36 @@
 #include <cstddef>
 #include <cstdint>
 
+/*
+ * Discovery channel codec.
+ *
+ * Node boards no longer join the bus through discovery: each is numbered
+ * when flashed (node_identity.hpp) and always uses node_address(number).
+ * The only message still sent on this channel is the hub's boot-time
+ * release, which tells every node to make its outputs safe. The other
+ * message types are kept only so their numbers are not reused.
+ *
+ * The UUID type and capability bits also live here; both are used by the
+ * inventory the hub reports to Adelie.
+ */
+
 namespace rig::protocol {
 
 inline constexpr std::uint16_t discovery_magic = 0x4D47;
 inline constexpr std::uint8_t discovery_version = 1;
 inline constexpr std::size_t discovery_header_size = 12;
 inline constexpr std::size_t uuid_size = 12;
-inline constexpr std::size_t discovery_slot_count = 16;
-inline constexpr std::uint16_t discovery_slot_us = 2500;
 
 using DeviceUuid = std::array<std::uint8_t, uuid_size>;
 
 enum class DiscoveryType : std::uint8_t {
-  discover = 1,
-  offer = 2,
-  assign = 3,
-  assigned = 4,
-  release = 5,
-  verify = 6,
-  verified = 7,
+  discover = 1, // retired
+  offer = 2,    // retired
+  assign = 3,   // retired
+  assigned = 4, // retired
+  release = 5,  // hub restarted: nodes make outputs safe
+  verify = 6,   // reserved
+  verified = 7, // reserved
 };
 
 enum Capability : std::uint32_t {
@@ -48,24 +59,6 @@ struct DiscoveryView {
   const std::uint8_t *payload{};
 };
 
-struct DiscoveryParameters {
-  std::uint8_t slot_count{discovery_slot_count};
-  std::uint16_t slot_us{discovery_slot_us};
-  std::uint8_t round{};
-};
-
-struct Offer {
-  DeviceUuid uuid{};
-  std::uint32_t capabilities{};
-  std::uint32_t boot_count{};
-};
-
-struct Assignment {
-  DeviceUuid uuid{};
-  std::uint8_t address{};
-  std::uint8_t logical_slot{};
-};
-
 std::size_t encode_discovery(const DiscoveryHeader &header,
                             const std::uint8_t *payload,
                             std::size_t payload_length,
@@ -73,18 +66,5 @@ std::size_t encode_discovery(const DiscoveryHeader &header,
 
 bool decode_discovery(const std::uint8_t *message, std::size_t length,
                      DiscoveryView &output);
-
-std::uint8_t discovery_slot(const DeviceUuid &uuid, std::uint32_t nonce,
-                            std::uint8_t slot_count);
-
-std::size_t encode_offer(const Offer &offer, std::uint8_t *destination,
-                         std::size_t capacity);
-bool decode_offer(const std::uint8_t *payload, std::size_t length,
-                  Offer &output);
-
-std::size_t encode_assignment(const Assignment &assignment,
-                              std::uint8_t *destination, std::size_t capacity);
-bool decode_assignment(const std::uint8_t *payload, std::size_t length,
-                       Assignment &output);
 
 } // namespace rig::protocol

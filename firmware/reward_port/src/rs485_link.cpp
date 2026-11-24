@@ -12,6 +12,7 @@
 #include "rig_protocol/bytes.hpp"
 #include "rig_protocol/record_protocol.hpp"
 #include "rig_protocol/discovery_protocol.hpp"
+#include "rig_protocol/node_identity.hpp"
 #include "rig_protocol/system_config.hpp"
 #include "rig_protocol/transport.hpp"
 #include "outputs.hpp"
@@ -34,8 +35,15 @@ volatile std::uint16_t receive_write;
 rig::transport::UartDecoder decoder;
 rig::transport::Reassembler reassembler;
 rig::protocol::DeviceUuid device_uuid;
+/* Fixed from the identity page at boot. A board without a valid identity
+ * keeps the unassigned address and never transmits, so it cannot collide
+ * with a numbered board. */
+bool identity_valid;
 std::uint8_t local_address;
 std::uint8_t local_logical_slot = 0xFF;
+std::uint64_t next_missing_identity_blink;
+inline constexpr std::uint64_t missing_identity_blink_ticks = 16'000'000ULL;
+inline constexpr std::uint32_t missing_identity_blink_ms = 200U;
 volatile std::uint32_t error_count;
 std::uint32_t duplicate_count;
 std::uint16_t last_request_transfer;
@@ -45,15 +53,6 @@ bool last_request_valid;
 std::uint16_t outstanding_record_transfer;
 bool outstanding_record;
 std::uint64_t last_contact;
-
-struct PendingOffer {
-  bool active{};
-  std::uint64_t send_ticks{};
-  std::uint32_t nonce{};
-  std::uint16_t transfer_id{};
-};
-
-PendingOffer pending_offer;
 
 void uart_initialize() {
   __HAL_RCC_USART1_CLK_ENABLE();
@@ -157,29 +156,12 @@ void send_poll_response(std::uint16_t transfer_id) {
   }
 }
 
-void send_offer() {
-  rig::protocol::Offer offer;
-  offer.uuid = device_uuid;
-  offer.capabilities =
-      rig::protocol::capability_light_gate | rig::protocol::capability_rgb |
-      rig::protocol::capability_audio | rig::protocol::capability_valve |
-      rig::protocol::capability_ir | rig::protocol::capability_sync_capture;
-  offer.boot_count = 0;
-  std::uint8_t offer_payload[32]{};
-  const std::size_t offer_payload_length = rig::protocol::encode_offer(
-      offer, offer_payload, sizeof(offer_payload));
-  rig::protocol::DiscoveryHeader header;
-  header.type = rig::protocol::DiscoveryType::offer;
-  header.nonce = pending_offer.nonce;
-  std::uint8_t message[64]{};
-  const std::size_t message_length = rig::protocol::encode_discovery(
-      header, offer_payload, offer_payload_length, message, sizeof(message));
-  (void)send_message(rig::transport::Channel::discovery, 0, local_address,
-                     rig::config::hub_address, pending_offer.transfer_id,
-                     message, message_length);
-  pending_offer.active = false;
-}
-
+/*
+ * The node's address is fixed by its identity page, so the only discovery
+ * message it still acts on is the hub's boot-time release, which now just
+ * means "the hub restarted: make outputs safe". Discover and assign are
+ * ignored; the address never changes.
+ */
 void handle_discovery(const rig::transport::MessageView &message) {
   rig::protocol::DiscoveryView view;
   if (!rig::protocol::decode_discovery(message.payload, message.payload_length,
@@ -187,81 +169,28 @@ void handle_discovery(const rig::transport::MessageView &message) {
     ++error_count;
     return;
   }
-
-  if (view.header.type == rig::protocol::DiscoveryType::discover &&
-      local_address == rig::config::unassigned_address) {
-    if (view.header.payload_length != 4U) {
-      return;
-    }
-    const std::uint8_t slot_count = view.payload[0];
-    const std::uint16_t slot_us = rig::wire::get_u16(view.payload + 1);
-    if (slot_count == 0U || slot_count > 32U || slot_us < 500U) {
-      return;
-    }
-    const std::uint8_t slot = rig::protocol::discovery_slot(
-        device_uuid, view.header.nonce, slot_count);
-    pending_offer.active = true;
-    pending_offer.nonce = view.header.nonce;
-    pending_offer.transfer_id = message.transfer_id;
-    pending_offer.send_ticks =
-        node_timebase::now() +
-        static_cast<std::uint64_t>(200U + slot * slot_us) * 16U;
-    return;
-  }
-
-  if (view.header.type == rig::protocol::DiscoveryType::assign) {
-    rig::protocol::Assignment assignment;
-    if (!rig::protocol::decode_assignment(
-            view.payload, view.header.payload_length, assignment) ||
-        assignment.uuid != device_uuid) {
-      return;
-    }
-    local_address = assignment.address;
-    local_logical_slot = assignment.logical_slot;
-
-    rig::protocol::DiscoveryHeader response_header;
-    response_header.type = rig::protocol::DiscoveryType::assigned;
-    response_header.nonce = view.header.nonce;
-    std::uint8_t assignment_payload[16]{};
-    const std::size_t assignment_length = rig::protocol::encode_assignment(
-        assignment, assignment_payload, sizeof(assignment_payload));
-    std::uint8_t response[48]{};
-    const std::size_t response_length = rig::protocol::encode_discovery(
-        response_header, assignment_payload, assignment_length, response,
-        sizeof(response));
-    (void)send_message(rig::transport::Channel::discovery,
-                       rig::transport::response, local_address,
-                       rig::config::hub_address, message.transfer_id,
-                       response, response_length);
-    return;
-  }
-
-  if (view.header.type == rig::protocol::DiscoveryType::release) {
-    if (view.header.payload_length == 0U) {
-      local_address = rig::config::unassigned_address;
-      local_logical_slot = 0xFF;
-      outstanding_record = false;
-      pending_offer.active = false;
-      node_outputs::all_safe(node_timebase::now());
-      return;
-    }
-    rig::protocol::Assignment assignment;
-    if (rig::protocol::decode_assignment(
-            view.payload, view.header.payload_length, assignment) &&
-        assignment.uuid == device_uuid) {
-      local_address = rig::config::unassigned_address;
-      local_logical_slot = 0xFF;
-      node_outputs::all_safe(node_timebase::now());
-    }
+  if (view.header.type == rig::protocol::DiscoveryType::release &&
+      view.header.payload_length == 0U) {
+    outstanding_record = false;
+    node_outputs::all_safe(node_timebase::now());
   }
 }
 
+bool read_identity(std::uint8_t &node_id) {
+  std::uint8_t record[rig::identity::record_size];
+  std::memcpy(record,
+              reinterpret_cast<const void *>(rig::identity::page_address),
+              sizeof(record));
+  return rig::identity::decode_identity(record, sizeof(record), node_id);
+}
+
 void handle_message(const rig::transport::MessageView &message) {
+  if (!identity_valid) {
+    return;
+  }
   const bool addressed =
       message.destination == local_address ||
-      message.destination == rig::config::broadcast_address ||
-      (local_address == rig::config::unassigned_address &&
-       message.destination == rig::config::unassigned_address);
+      message.destination == rig::config::broadcast_address;
   if (!addressed || message.source != rig::config::hub_address) {
     return;
   }
@@ -345,17 +274,34 @@ void initialize() {
     const std::uint32_t value = uid[word];
     rig::wire::put_u32(device_uuid.data() + word * 4U, value);
   }
+
+  std::uint8_t node_id = 0xFF;
+  identity_valid = read_identity(node_id);
+  if (identity_valid) {
+    local_address = rig::config::node_address(node_id);
+    local_logical_slot = node_id;
+    node_debug::log("NODE_ID id=%u address=0x%02x\r\n",
+                    static_cast<unsigned int>(node_id),
+                    static_cast<unsigned int>(local_address));
+  } else {
+    node_debug::log("NODE_ID missing: flash with scripts/flash.py --id N; "
+                    "RS485 stays silent\r\n");
+  }
   uart_initialize();
 }
 
 void service() {
   consume_received();
-  if (pending_offer.active &&
-      node_timebase::now() >= pending_offer.send_ticks) {
-    send_offer();
+  if (!identity_valid) {
+    const std::uint64_t now_ticks = node_timebase::now();
+    if (now_ticks >= next_missing_identity_blink) {
+      node_outputs::set_rgb(255, 0, 0, missing_identity_blink_ms, now_ticks);
+      next_missing_identity_blink = now_ticks + missing_identity_blink_ticks;
+    }
   }
 }
 
+bool has_identity() { return identity_valid; }
 const rig::protocol::DeviceUuid &uuid() { return device_uuid; }
 std::uint8_t address() { return local_address; }
 std::uint8_t logical_slot() { return local_logical_slot; }

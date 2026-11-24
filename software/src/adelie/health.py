@@ -104,8 +104,8 @@ class SystemHealth:
 
 class HealthSource(Protocol):
     connected: bool
-    inventory_applied: bool
-    inventory: Mapping[str, Any]
+    # Present node boards by node number.
+    inventory: Mapping[int, Any]
     nodes: Mapping[int, NodeStats]
     local_sensors: LocalSensorState
     config: Any
@@ -119,7 +119,7 @@ def configured_boards(config: Any) -> list[BoardInfo]:
         BoardInfo(
             node_number=assignment.node_number,
             address=NODE_ADDRESS_BASE + assignment.node_number,
-            name=assignment.label or f"node{assignment.node_number}",
+            name=assignment.name,
         )
         for assignment in sorted(
             config.assignments, key=lambda item: item.node_number
@@ -243,10 +243,10 @@ def _battery_item(source: HealthSource) -> HealthItem:
     return HealthItem("battery", "Battery", level, detail)
 
 
-def _board_setup_needed(source: HealthSource) -> bool:
-    return source.connected and not source.inventory_applied and bool(
-        source.inventory
-    ) and not source.config.exact_match(source.inventory)
+def _unexpected_boards(source: HealthSource, boards: Sequence[BoardInfo]) -> list[int]:
+    """Node numbers the hub sees that this rig's configuration does not list."""
+    configured = {board.node_number for board in boards}
+    return sorted(number for number in source.inventory if number not in configured)
 
 
 def _boards_item(
@@ -258,11 +258,11 @@ def _boards_item(
         )
     if not source.connected:
         return HealthItem("boards", "Ports", Level.UNKNOWN, f"{len(boards)} configured")
-    if _board_setup_needed(source):
-        return HealthItem(
-            "boards", "Ports", Level.WARN,
-            "Board setup needed (Developer › Board setup)",
-        )
+    unexpected = _unexpected_boards(source, boards)
+    extra = (
+        " · unconfigured node " + ", ".join(str(number) for number in unexpected)
+        if unexpected else ""
+    )
     missing = [
         board.name
         for board in boards
@@ -270,11 +270,14 @@ def _boards_item(
     ]
     ready = len(boards) - len(missing)
     if not missing:
-        return HealthItem("boards", "Ports", Level.OK, f"All {ready} ready")
+        return HealthItem(
+            "boards", "Ports", Level.WARN if unexpected else Level.OK,
+            f"All {ready} ready{extra}",
+        )
     shown = ", ".join(missing[:3]) + (" …" if len(missing) > 3 else "")
     return HealthItem(
         "boards", "Ports", Level.WARN,
-        f"{ready} of {len(boards)} ready · waiting for {shown}",
+        f"{ready} of {len(boards)} ready · waiting for {shown}{extra}",
     )
 
 
@@ -308,10 +311,6 @@ def _not_ready_reason(
         return "Connect to the hub to start"
     if not boards:
         return "No ports configured: use Developer › Board setup"
-    if _board_setup_needed(source):
-        return "Boards changed: use Developer › Board setup"
-    if not source.inventory_applied:
-        return "Assigning ports…"
     ttl_generator = node_state(source.nodes.get(TTL_GENERATOR_ADDRESS), now_ns)
     if ttl_generator is NodeState.OFFLINE:
         return "Sync box is offline"

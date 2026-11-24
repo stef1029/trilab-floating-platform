@@ -11,6 +11,7 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic \
   "$root_dir/shared/src/record_protocol.cpp" \
   "$root_dir/shared/src/command_protocol.cpp" \
   "$root_dir/shared/src/discovery_protocol.cpp" \
+  "$root_dir/shared/src/node_identity.cpp" \
   "$root_dir/shared/tests/protocol_tests.cpp" \
   -o "$build_dir/protocol_tests"
 

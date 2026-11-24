@@ -14,7 +14,8 @@ The shared folder contains code used by the hub, TTL generator, and node. It has
 | `tlv.hpp`               | Flexible typed fields                              |
 | `record_protocol.hpp`    | Record v3 record codec                              |
 | `command_protocol.hpp`   | Command v2 command codec                            |
-| `discovery_protocol.hpp` | Discovery and assignment codec                     |
+| `discovery_protocol.hpp` | Hub restart (release) message, UUID type, capability bits |
+| `node_identity.hpp`      | Node number record in each node board's last flash page |
 | `clock_model.hpp`       | Fixed window affine clock model                    |
 
 ## Configuration
@@ -41,7 +42,8 @@ The test builds the protocol code with the host C++ compiler and checks:
 - Fragment reassembly
 - record round trip
 - Adelie command round trip
-- Discovery UUID assignment
+- Hub release message
+- Node identity record, against the bytes `flash.py` writes
 - Clock model fit and inverse conversion
 
 Run:

@@ -4,8 +4,8 @@ Node runs on STM32G071. It supports the NUCLEO G071RB prototype and the planned 
 
 ## Responsibilities
 
-- Read the 96 bit STM32 factory UUID
-- Join the RS485 bus through Discovery
+- Read its node number from the identity page and use RS485 address 0x10 + number
+- Report the 96 bit STM32 factory UUID in its boot record, for information only
 - Capture 4 Hz SYNC on TIM2 channel 1
 - Capture light gate interruption on TIM2 channel 2
 - Debounce light gate edges for 100 ms
@@ -89,7 +89,36 @@ Build the final pin profile:
 pio run -d reward_port -e final_pcb_g071gb
 ```
 
-Flash all stm32 boards:
+## Flash a board and give it its number
+
+Every board has a node number, 0 to 4 (`RIG_MAX_NODES - 1`). The number is
+the board's identity: node 3 is always RS485 address 0x13. Flash one board at
+a time with one ST-Link connected:
+
+```bash
+python scripts/flash.py --id 3   # new board, or renumbering: firmware + number
+python scripts/flash.py          # firmware update, keeps the board's number
+python scripts/flash.py --read   # report number and UUID, change nothing
+```
+
+Write the number on the board after giving it one. Plain `flash.py` refuses a
+board that has no number yet, so a fresh board always gets one on its first
+flash.
+
+The number lives in the last 2 KB flash page (0x0801F800), which
+`ld/node_flash.ld` keeps outside the firmware image. Any firmware-only flash
+(`flash.py` without `--id`, `flash_all.py`, or PlatformIO upload) leaves it
+alone. A full chip erase removes it. The record format is in
+`../shared/include/rig_protocol/node_identity.hpp`.
+
+A board with no valid number stays silent on RS485 and blinks red once a
+second.
+
+Two boards with the same number will collide on the bus. Keep the numbers
+unique; `flash.py --read` shows a board's number before you plug it in.
+
+To update several boards at once with the same image, `flash_all.py` still
+works and keeps each board's number:
 
 ```bash
 python scripts/flash_all.py --jobs 1

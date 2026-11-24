@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "rig_protocol/discovery_protocol.hpp"
 #include "rig_protocol/transport.hpp"
 
 namespace hub_rs485 {
@@ -17,11 +16,6 @@ struct Received {
   std::uint16_t transfer_id{};
   std::uint16_t length{};
   std::array<std::uint8_t, rig::transport::max_message_size> payload{};
-};
-
-struct DiscoveredOffer {
-  rig::protocol::Offer offer{};
-  std::uint16_t transfer_id{};
 };
 
 struct Diagnostics {
@@ -45,9 +39,6 @@ int send_one_way(std::uint8_t destination, rig::transport::Channel channel,
                  std::uint16_t transfer_id, std::uint8_t flags,
                  const std::uint8_t *payload = nullptr,
                  std::size_t payload_length = 0);
-
-std::size_t discover(std::uint32_t nonce, std::uint8_t round,
-                     DiscoveredOffer *offers, std::size_t capacity);
 
 std::uint32_t errors();
 std::uint32_t retries();

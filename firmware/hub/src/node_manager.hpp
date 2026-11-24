@@ -23,11 +23,9 @@ struct NodeSnapshot {
 };
 
 int initialize();
+/* Number of node slots currently answering polls. */
 std::size_t count();
 std::size_t inventory_bytes(std::uint8_t *destination, std::size_t capacity);
-
-rig::protocol::Status apply_inventory(const std::uint8_t *packed,
-                                        std::size_t length);
 
 bool queue_command(std::uint8_t destination, const std::uint8_t *message,
                    std::size_t length, std::uint16_t host_transfer_id);
@@ -38,6 +36,7 @@ bool local_to_hub(std::uint8_t address, std::uint64_t local_ticks,
 
 void set_telemetry(rig::protocol::TelemetryLevel level);
 rig::protocol::TelemetryLevel telemetry();
+/* The index-th present node, in node-number order (0 <= index < count()). */
 bool snapshot(std::size_t index, NodeSnapshot &output);
 
 } // namespace hub_nodes

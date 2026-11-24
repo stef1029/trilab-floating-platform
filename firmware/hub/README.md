@@ -6,7 +6,7 @@ Hub runs with Zephyr on the Floating Hub PCB (BMD-340 module, built as `ubx_bmd3
 
 - Generate the 4 Hz SYNC pulse from a 16 MHz hardware timer
 - Poll up to `RIG_MAX_NODES` node boards
-- Run discovery and address assignment
+- Find which node boards are present by polling their fixed addresses
 - Fit one clock model for every live node
 - Connect to exactly one TTL generator over BLE
 - Fit the TTL generator BLE anchor clock model
@@ -26,7 +26,7 @@ Hub runs with Zephyr on the Floating Hub PCB (BMD-340 module, built as `ubx_bmd3
 | `timebase.cpp`          | TIMER2 SYNC generation and 16 MHz Hub timebase      |
 | `controller_clock.cpp`  | BLE controller clock bridge                           |
 | `rs485_bus.cpp`         | COBS, polling, retries, and bus mutex                 |
-| `node_manager.cpp`     | Discovery, inventory, polling, and node clock models |
+| `node_manager.cpp`     | Presence, inventory, polling, and node clock models |
 | `ble_gateway.cpp`       | Adelie server and TTL generator client                    |
 | `ttl_generator_manager.cpp` | BLE anchor pairing and record conversion              |
 | `experiment.cpp`        | Session records, TTL generator TTL train, and sync test    |
@@ -102,19 +102,19 @@ Do not send debug text through the RS485 UART.
 
 ## Runtime states
 
-Hub can discover, synchronize, and report health before Adelie connects. It has no experiment storage.
+Hub can find nodes, synchronize, and report health before Adelie connects. It has no experiment storage.
 
 A normal run starts only after:
 
-- Every live UUID is assigned
+- At least one node is present (Adelie decides which nodes a run needs)
 - Every node clock model is valid
 - TTL generator is connected
 - The TTL generator clock model is valid
 
-If a node stops responding for three seconds, it leaves the live inventory. If it returns, Discovery restores its address. A changed UUID requires a new Adelie configuration.
+Every node board is given a number, 0 to `RIG_MAX_NODES - 1`, when it is flashed (`firmware/reward_port/scripts/flash.py --id N`), and node N always uses address `0x10 + N`. There is no discovery: Hub polls every slot from boot, so it does not matter whether Hub or the nodes power up first. If a node stops responding for three seconds, it leaves the live inventory and a running session stops; when it answers again it rejoins. A node that resets is noticed from its boot record, which also stops a running session and restarts its clock model. The board's UUID is reported for information only, and stays zero for a board that was already running when Hub started until that board next resets.
 
 ## RS485 timing
 
-Assigned Nodes are polled every 10 ms. Poll responses allow 12 ms. This covers a maximum record at 460800 baud. Failed transactions receive one retry. Absent nodes are probed at a slower rate so one missing board does not occupy the bus.
+Assigned Nodes are polled every 10 ms. Poll responses allow 12 ms. This covers a maximum record at 460800 baud. Failed transactions receive one retry. Absent slots are asked every 500 ms whether a board is there, so a missing board costs about 2% of the bus.
 
-The bus mutex remains held across the poll request, response, and record acknowledgement. A command or discovery round cannot enter that transaction.
+The bus mutex remains held across the poll request, response, and record acknowledgement. A command cannot enter that transaction.

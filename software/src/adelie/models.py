@@ -11,10 +11,14 @@ from .constants import COMMON_TIMER_HZ
 
 @dataclass(slots=True)
 class InventoryEntry:
-    uuid: str
+    """A node board the hub currently sees, keyed by its flashed number."""
+
+    node_number: int
     address: int
-    logical_slot: int | None
     capabilities: int
+    # Information only. None until the hub has seen the board's boot record
+    # (a board already running when the hub started reports zeros).
+    uuid: str | None = None
     last_seen_ns: int = field(default_factory=time.perf_counter_ns)
 
 

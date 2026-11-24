@@ -53,23 +53,6 @@ bool command_u32(const rig::protocol::CommandMessageView &message,
   return false;
 }
 
-bool command_bytes(const rig::protocol::CommandMessageView &message,
-                   rig::protocol::CommandField wanted,
-                   const std::uint8_t *&value, std::size_t &length) {
-  rig::protocol::TlvReader reader(message.payload,
-                                    message.header.payload_length);
-  rig::protocol::FieldView field;
-  while (reader.next(field)) {
-    if (field.tag == static_cast<std::uint16_t>(wanted) &&
-        field.type == rig::protocol::ValueType::bytes) {
-      value = field.value;
-      length = field.length;
-      return true;
-    }
-  }
-  return false;
-}
-
 void send_response(const rig::protocol::CommandMessageView &command,
                    rig::protocol::Status status, std::uint16_t transfer_id,
                    const std::uint8_t *payload = nullptr,
@@ -120,23 +103,14 @@ void propagate_session(rig::protocol::Opcode opcode, std::uint32_t session) {
                                       message, length);
 }
 
-bool every_node_assigned() {
-  const std::size_t total = hub_nodes::count();
-  if (total == 0U) {
-    return false;
-  }
-  for (std::size_t index = 0; index < total; ++index) {
-    hub_nodes::NodeSnapshot node;
-    if (!hub_nodes::snapshot(index, node) || node.logical_slot == 0xFFU) {
-      return false;
-    }
-  }
-  return true;
-}
+/* Node numbers are flashed into the boards, so every present node already
+ * has its slot. Which nodes a session needs is Adelie's decision; the hub
+ * only refuses a session with no nodes at all. */
+bool any_node_present() { return hub_nodes::count() != 0U; }
 
 rig::protocol::Status begin_session(std::uint32_t wanted,
                                       bool require_synchronization) {
-  if (wanted == 0U || !every_node_assigned()) {
+  if (wanted == 0U || !any_node_present()) {
     return wanted == 0U ? rig::protocol::Status::invalid_parameter
                         : rig::protocol::Status::inventory_mismatch;
   }
@@ -195,18 +169,6 @@ void handle_local(const rig::protocol::CommandMessageView &command,
       (void)response_fields.bytes(
           static_cast<std::uint16_t>(rig::protocol::CommandField::uuid_list),
           inventory, static_cast<std::uint8_t>(length));
-    }
-    break;
-  }
-
-  case rig::protocol::Opcode::apply_inventory: {
-    const std::uint8_t *packed{};
-    std::size_t length{};
-    if (!command_bytes(command, rig::protocol::CommandField::uuid_list,
-                       packed, length)) {
-      status = rig::protocol::Status::invalid_parameter;
-    } else {
-      status = hub_nodes::apply_inventory(packed, length);
     }
     break;
   }
@@ -406,8 +368,7 @@ void receive_from_host(const rig::transport::MessageView &message,
       send_response(command, rig::protocol::Status::transport_error,
                     message.transfer_id, nullptr, 0, receive_ticks);
     }
-  } else if (rig::config::is_node_address(message.destination) ||
-             rig::config::is_discovery_address(message.destination)) {
+  } else if (rig::config::is_node_address(message.destination)) {
     if (!hub_nodes::queue_command(message.destination, message.payload,
                                        message.payload_length,
                                        message.transfer_id)) {

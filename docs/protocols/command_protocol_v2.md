@@ -43,7 +43,7 @@ Kind 1 is a command. Kind 2 is a response. The TLV encoding and value types are 
 |     5 | invalid state      |
 |     6 | invalid parameter  |
 |     7 | not synchronized   |
-|     8 | inventory mismatch |
+|     8 | inventory mismatch (session start with no nodes present) |
 |     9 | timeout            |
 |    10 | transport error    |
 |    11 | queue full         |
@@ -60,7 +60,7 @@ Kind 1 is a command. Kind 2 is a response. The TLV encoding and value types are 
 | -------: | --------------- | ---------------------------- |
 | `0x0001` | ping            | Any board                    |
 | `0x0002` | get inventory   | Hub                       |
-| `0x0003` | apply inventory | Hub                       |
+| `0x0003` | apply inventory | Retired: Hub answers `unsupported` |
 | `0x0004` | identify        | Node                        |
 | `0x0005` | get health      | Any board                    |
 | `0x0006` | clear faults    | Any board                    |
@@ -113,32 +113,20 @@ Kind 1 is a command. Kind 2 is a response. The TLV encoding and value types are 
 
 ## Inventory encoding
 
-`get inventory` returns `UUID list` as zero or more 18 byte entries:
+`get inventory` returns `UUID list` with one 18 byte entry per node that is currently answering polls, in node number order:
 
 | Offset | Size | Meaning                          |
 | -----: | ---: | -------------------------------- |
-|      0 |   12 | STM32 factory UUID               |
-|     12 |    1 | Current transport address        |
-|     13 |    1 | Zero based node index or `0xFF` |
+|      0 |   12 | STM32 factory UUID, or zero until Hub has seen the board's boot record |
+|     12 |    1 | Transport address, `0x10 + node number` |
+|     13 |    1 | Node number                      |
 |     14 |    4 | Capability bits                  |
 
-`apply inventory` uses 13 byte entries:
-
-| Offset | Size | Meaning                                                    |
-| -----: | ---: | ---------------------------------------------------------- |
-|      0 |   12 | UUID                                                       |
-|     12 |    1 | Node index from 0 to one less than the configured maximum |
-
-Hub accepts the list only when:
-
-- Entry count equals the complete live node count
-- Every live UUID appears exactly once
-- No unknown UUID appears
-- Every node index is valid and unique
+Node numbers are flashed into the boards ([node identity v1](node_identity_v1.md)), so there is nothing to assign. `apply inventory` is retired.
 
 ## Sessions
 
-A normal session can start only when the exact inventory is assigned, every node clock model is valid, TTL generator is connected, and its clock model is valid.
+Hub starts a session when at least one node is present, TTL generator is connected, and, when synchronization is required, every present node and TTL generator clock model is valid. Adelie decides which node numbers a run needs and waits for each of them before Record Start.
 
 Commands that affect experiment outputs carry the active session ID. A mismatch is rejected.
 

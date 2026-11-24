@@ -119,7 +119,7 @@ class DevView(QWidget):
         self.tabs.setCurrentIndex(self.TAB_SETUP)
 
     def handle_event(self, kind: str, value: object) -> None:
-        if kind in ("inventory", "inventory_applied"):
+        if kind == "inventory":
             self.board_setup.handle_event(kind, value)
         elif kind == "ttl":
             self.ttl.update_ttl(value)

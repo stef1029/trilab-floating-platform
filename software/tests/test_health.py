@@ -16,7 +16,6 @@ from adelie.health import (
 from adelie.models import LocalSensorState, NodeStats
 
 NOW = 1_000_000_000_000
-UUIDS = ["470037000151353530333937", "48004f000151353530333937"]
 
 
 def _node(address: int, *, synced: bool = True, age_ns: int = 0) -> NodeStats:
@@ -29,8 +28,8 @@ def _node(address: int, *, synced: bool = True, age_ns: int = 0) -> NodeStats:
 
 def _source(**overrides):
     config = RigConfig(assignments=[
-        BoardAssignment(uuid=UUIDS[0], node_number=0, label=""),
-        BoardAssignment(uuid=UUIDS[1], node_number=1, label="left"),
+        BoardAssignment(node_number=0, label=""),
+        BoardAssignment(node_number=1, label="left"),
     ])
     nodes = {
         HUB_ADDRESS: _node(HUB_ADDRESS),
@@ -40,8 +39,7 @@ def _source(**overrides):
     }
     values = dict(
         connected=True,
-        inventory_applied=True,
-        inventory={uuid: object() for uuid in UUIDS},
+        inventory={0: object(), 1: object()},
         nodes=nodes,
         local_sensors=LocalSensorState(),
         config=config,
@@ -95,15 +93,13 @@ def test_missing_board_is_named():
     assert health.ready_reason == "Waiting for left"
 
 
-def test_board_setup_needed_when_uuid_set_differs():
-    source = _source(
-        inventory_applied=False,
-        inventory={UUIDS[0]: object(), "ffffffffffffffffffffffff": object()},
-        ready_to_record=False,
-    )
+def test_unconfigured_board_is_flagged_but_does_not_block():
+    source = _source(inventory={0: object(), 1: object(), 4: object()})
     health = HealthMonitor().assess(source, DIAG, NOW)
-    assert "Board setup" in health.item("boards").detail
-    assert "Board setup" in health.ready_reason
+    item = health.item("boards")
+    assert item.level is Level.WARN
+    assert item.detail == "All 2 ready · unconfigured node 4"
+    assert health.ready_to_record
 
 
 def test_comms_error_rate():

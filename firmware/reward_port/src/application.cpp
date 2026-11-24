@@ -414,6 +414,8 @@ void initialize(std::uint32_t reset_cause, bool light_test_passed,
   (void)fields.bytes(static_cast<std::uint16_t>(Field::uuid),
                      node_rs485::uuid().data(),
                      static_cast<std::uint8_t>(node_rs485::uuid().size()));
+  (void)fields.u8(static_cast<std::uint16_t>(Field::logical_slot),
+                  node_rs485::logical_slot());
   (void)fields.u32(static_cast<std::uint16_t>(Field::reset_cause), reset_cause);
   (void)fields.u16(static_cast<std::uint16_t>(Field::adc_value), clear_adc);
   (void)fields.boolean(static_cast<std::uint16_t>(Field::state),

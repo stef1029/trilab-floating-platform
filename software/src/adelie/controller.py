@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from .ble_link import BleLink
-from .config import BoardAssignment, RigConfig, normalize_uuid
+from .config import BoardAssignment, RigConfig
 from .constants import (
     HOST_ADDRESS,
     Channel,
     CommandField,
     CommandFlag,
+    DEFAULT_MAX_NODES,
     NODE_ADDRESS_BASE,
     Field,
     TTL_GENERATOR_ADDRESS,
@@ -56,7 +57,8 @@ class AdelieController:
         self.on_event = on_event
         self.recorder = LogRecorder()
         self.clock = HostClockModel()
-        self.inventory: dict[str, InventoryEntry] = {}
+        # Node boards the hub currently sees, by flashed node number.
+        self.inventory: dict[int, InventoryEntry] = {}
         self.nodes: dict[int, NodeStats] = {
             HUB_ADDRESS: NodeStats(HUB_ADDRESS, "hub"),
             TTL_GENERATOR_ADDRESS: NodeStats(TTL_GENERATOR_ADDRESS, "ttl_generator"),
@@ -65,10 +67,7 @@ class AdelieController:
         self.local_sensors = LocalSensorState()
         self.command_id = random.randint(1, 0x7FFF_FFFF)
         self.connected = False
-        self.inventory_applied = False
         self.telemetry_level = TelemetryLevel.STANDARD
-        self._node_aliases: dict[int, int] = {}
-        self._inventory_apply_command: int | None = None
         self._pending_clock: dict[int, int] = {}
         self._start_session_command: int | None = None
         self._stop_session_command: int | None = None
@@ -86,13 +85,14 @@ class AdelieController:
             on_sent=self._on_transport_sent,
             on_write_complete=self._on_transport_write_complete,
         )
+        self._name_nodes()
 
     def connect(self) -> None:
         self.link.start()
 
     @property
     def ready_to_record(self) -> bool:
-        if not self.connected or not self.inventory_applied:
+        if not self.connected or not self.config.assignments:
             return False
         required = [
             NODE_ADDRESS_BASE + assignment.node_number
@@ -205,17 +205,14 @@ class AdelieController:
         candidate.validate()
         candidate.save(self.config_path)
         self.config = candidate
-        self._node_aliases.clear()
-        self.inventory_applied = False
-        self._inventory_apply_command = None
-        self._apply_inventory_if_exact()
+        self._name_nodes()
+        self._publish_inventory()
 
     def start_recording(self, path: Path) -> None:
         if not self.connected:
             raise RuntimeError("Hub is not connected")
-        if not self.inventory_applied:
-            raise RuntimeError(
-                "the complete UUID set must be configured first")
+        if not self.config.assignments:
+            raise RuntimeError("no node boards are configured")
         if not self.ready_to_record:
             raise RuntimeError(
                 "wait for every node and TTL generator clock model")
@@ -227,10 +224,14 @@ class AdelieController:
             path,
             self.session_id,
             {
-                "protocol": {"transport": 1, "record": 3, "command": 2, "discovery": 1},
+                "protocol": {
+                    "transport": 1, "record": 3, "command": 2, "node_identity": 1,
+                },
+                # The UUID records which physical board was in each port; it
+                # is None if the hub has not seen that board's boot record.
                 "assignments": [
                     {
-                        "uuid": item.uuid,
+                        "uuid": self._uuid_of(item.node_number),
                         "node_number": item.node_number,
                         "label": item.label,
                     }
@@ -410,8 +411,8 @@ class AdelieController:
                 self.connected = False
                 self.local_sensors = LocalSensorState()
                 self.nodes[HUB_ADDRESS].connected = False
-                self.inventory_applied = False
-                self._inventory_apply_command = None
+                self.inventory.clear()
+                self._publish_inventory()
                 self._end_run(f"BLE {state}")
             if state == "connected":
                 self.nodes[HUB_ADDRESS].connected = True
@@ -433,7 +434,7 @@ class AdelieController:
     def _handle_record(
         self, message: Message, record: Record, received_ns: int
     ) -> None:
-        address = self._node_aliases.get(message.source, message.source)
+        address = message.source
         stats = self.nodes.setdefault(
             address, NodeStats(address, f"node_{address:02x}")
         )
@@ -773,16 +774,6 @@ class AdelieController:
         elif response.opcode is Opcode.GET_INVENTORY:
             self._decode_inventory_response(response)
         elif (
-            response.opcode is Opcode.APPLY_INVENTORY
-            and response.command_id == self._inventory_apply_command
-        ):
-            self._inventory_apply_command = None
-            self.inventory_applied = response.status is Status.OK
-            self.on_event("inventory_applied", self.inventory_applied)
-            if self.inventory_applied:
-                self.configure_valves()
-                self.request_inventory()
-        elif (
             response.opcode is Opcode.START_SESSION
             and response.command_id == self._start_session_command
         ):
@@ -802,6 +793,61 @@ class AdelieController:
             {"source": message.source, "response": response},
         )
 
+    # ---- node inventory ------------------------------------------------
+    #
+    # Node boards are numbered when flashed and node N always answers at
+    # NODE_ADDRESS_BASE + N, so the inventory is simply which numbers the hub
+    # currently sees. The hub sends an INVENTORY record whenever a node
+    # appears, disappears or restarts, and GET_INVENTORY returns the full set.
+
+    def _name_nodes(self) -> None:
+        """Give every configured node's stats card its configured name."""
+        for assignment in self.config.assignments:
+            address = NODE_ADDRESS_BASE + assignment.node_number
+            stats = self.nodes.setdefault(address, NodeStats(address, assignment.name))
+            stats.name = assignment.name
+
+    def _uuid_of(self, node_number: int) -> str | None:
+        entry = self.inventory.get(node_number)
+        return entry.uuid if entry is not None else None
+
+    def _publish_inventory(self) -> None:
+        present = set(self.inventory)
+        configured = set(self.config.node_numbers)
+        self.on_event(
+            "inventory",
+            {
+                "entries": [self.inventory[number] for number in sorted(present)],
+                "missing": sorted(configured - present),
+                "unexpected": sorted(present - configured),
+            },
+        )
+
+    def _node_present(
+        self, address: int, uuid_bytes: bytes | None, capabilities: int
+    ) -> bool:
+        """Record a present node. Returns False for an address that is not a
+        node slot."""
+        node_number = address - NODE_ADDRESS_BASE
+        if not 0 <= node_number < DEFAULT_MAX_NODES:
+            return False
+        uuid = (
+            uuid_bytes.hex()
+            if uuid_bytes and any(uuid_bytes)
+            else None
+        )
+        previous = self.inventory.get(node_number)
+        self.inventory[node_number] = InventoryEntry(
+            node_number=node_number,
+            address=address,
+            capabilities=capabilities,
+            uuid=uuid or (previous.uuid if previous else None),
+        )
+        # Valve limits live in node RAM, so a node that has just appeared or
+        # restarted needs them again.
+        self.configure_valve(address)
+        return True
+
     def _decode_inventory_response(self, response: CommandMessage) -> None:
         raw = next(
             (
@@ -813,117 +859,44 @@ class AdelieController:
         )
         if not isinstance(raw, bytes) or len(raw) % 18:
             return
-        inventory: dict[str, InventoryEntry] = {}
+        # 18 bytes per present node: UUID, address, node number, capabilities.
+        self.inventory.clear()
         for offset in range(0, len(raw), 18):
-            uuid = raw[offset: offset + 12].hex()
-            address = raw[offset + 12]
-            logical_raw = raw[offset + 13]
-            capabilities = int.from_bytes(
-                raw[offset + 14: offset + 18], "little")
-            inventory[uuid] = InventoryEntry(
-                uuid=uuid,
-                address=address,
-                logical_slot=None if logical_raw == 0xFF else logical_raw,
-                capabilities=capabilities,
+            self._node_present(
+                address=raw[offset + 12],
+                uuid_bytes=raw[offset: offset + 12],
+                capabilities=int.from_bytes(
+                    raw[offset + 14: offset + 18], "little"),
             )
-        self.inventory = inventory
-        self._apply_inventory_if_exact()
-        self.on_event(
-            "inventory",
-            {
-                "entries": list(inventory.values()),
-                "exact_match": self.config.exact_match(inventory),
-            },
-        )
+        self._publish_inventory()
 
     def _update_inventory_record(self, record: Record) -> None:
         fields = record.field_map
-        raw_uuid = fields.get(int(Field.UUID))
         address = fields.get(int(Field.LINK_ADDRESS))
-        if isinstance(raw_uuid, bytes) and len(raw_uuid) == 12 and address is not None:
-            uuid = raw_uuid.hex()
-            if fields.get(int(Field.STATE), True) is False:
-                self.inventory.pop(uuid, None)
-                self.inventory_applied = False
-                self._inventory_apply_command = None
-                if self.session_id:
-                    self._request_stop("Node inventory changed")
-                self.on_event(
-                    "inventory",
-                    {
-                        "entries": list(self.inventory.values()),
-                        "exact_match": self.config.exact_match(self.inventory),
-                    },
-                )
+        if address is None:
+            return
+        address = int(address)
+        node_number = address - NODE_ADDRESS_BASE
+        required = node_number in self.config.node_numbers
+        if fields.get(int(Field.STATE), True) is False:
+            self.inventory.pop(node_number, None)
+            if self.session_id and required:
+                self._request_stop("Node disconnected")
+        else:
+            # The hub only reports a present node when it appears or its
+            # board restarts; a restart of a node already present means it
+            # has left the session.
+            restarted = node_number in self.inventory
+            raw_uuid = fields.get(int(Field.UUID))
+            if not self._node_present(
+                address,
+                raw_uuid if isinstance(raw_uuid, bytes) else None,
+                int(fields.get(int(Field.VALUE), 0)),
+            ):
                 return
-            self.inventory[uuid] = InventoryEntry(
-                uuid=uuid,
-                address=int(address),
-                logical_slot=fields.get(int(Field.LOGICAL_SLOT)),
-                capabilities=int(fields.get(int(Field.VALUE), 0)),
-            )
-            if self.session_id and not self.config.exact_match(self.inventory):
-                self._request_stop("Node inventory changed")
-            self._apply_inventory_if_exact()
-            self.on_event(
-                "inventory",
-                {
-                    "entries": list(self.inventory.values()),
-                    "exact_match": self.config.exact_match(self.inventory),
-                },
-            )
-
-    def _apply_inventory_if_exact(self) -> None:
-        if not self.connected:
-            return
-        if not self.inventory or not self.config.exact_match(self.inventory):
-            self._node_aliases.clear()
-            self.inventory_applied = False
-            self._inventory_apply_command = None
-            return
-
-        # Discovery addresses such as 0x80 are temporary Discovery routes. Map
-        # records that are still in flight onto their saved node address and
-        # remove the temporary statistics object instead of showing two cards
-        # for one physical board.
-        for assignment in self.config.assignments:
-            entry = self.inventory[normalize_uuid(assignment.uuid)]
-            address = NODE_ADDRESS_BASE + assignment.node_number
-            name = assignment.label or f"node{assignment.node_number}"
-            if entry.address != address:
-                self._node_aliases[entry.address] = address
-                temporary = self.nodes.pop(entry.address, None)
-            else:
-                temporary = None
-
-            stats = self.nodes.get(address)
-            if stats is None:
-                stats = temporary or NodeStats(address, name)
-                stats.address = address
-                self.nodes[address] = stats
-            stats.name = name
-
-        for temporary_address in self._node_aliases:
-            if temporary_address not in self._node_aliases.values():
-                self.nodes.pop(temporary_address, None)
-
-        if self.inventory_applied or self._inventory_apply_command is not None:
-            return
-
-        packed = bytearray()
-        for assignment in sorted(
-            self.config.assignments, key=lambda item: item.node_number
-        ):
-            entry = self.inventory[normalize_uuid(assignment.uuid)]
-            packed += bytes.fromhex(entry.uuid)
-            packed += bytes((assignment.node_number,))
-
-        self._inventory_apply_command = self.command(
-            Opcode.APPLY_INVENTORY,
-            fields=[
-                (CommandField.UUID_LIST, ValueType.BYTES, bytes(packed)),
-            ],
-        )
+            if restarted and self.session_id and required:
+                self._request_stop("Node restarted")
+        self._publish_inventory()
 
     def _end_run(self, reason: str) -> None:
         if self._stop_timer is not None:

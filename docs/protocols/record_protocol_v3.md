@@ -67,7 +67,7 @@ Readers must ignore unknown tags with a valid length and type. Writers must not 
 | -------: | ----------------- | ------------------------------------------- |
 | `0x0001` | boot              | Reset and firmware information              |
 | `0x0002` | health            | Queue, uptime, sensor, and transport health |
-| `0x0003` | inventory         | Live UUID set change                        |
+| `0x0003` | inventory         | A node appeared, disappeared, or restarted  |
 | `0x0004` | link quality      | RSSI, retry, and connection information     |
 | `0x0100` | sync observation  | Raw local SYNC or BLE anchor timestamp      |
 | `0x0101` | sync quality      | RMS, skew, points, and generation           |

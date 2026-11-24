@@ -40,21 +40,21 @@ The CRC initial value is `0xFFFF` and the polynomial is `0x1021`.
 | ----: | ----------- |
 |     1 | Record v3    |
 |     2 | Command v2   |
-|     3 | Discovery v1 |
+|     3 | Discovery v1 (only the hub restart release is still sent) |
 
 ## Addresses
 
 |         Value | Meaning                       |
 | ------------: | ----------------------------- |
-|        `0x00` | Unassigned node              |
+|        `0x00` | Node without a node number (never transmits) |
 |        `0x01` | Hub                        |
 |        `0x02` | TTL generator                     |
 |        `0x03` | Adelie                        |
-| `0x10` onward | Assigned node addresses      |
-| `0x80` onward | Temporary discovery addresses |
+| `0x10` onward | Node addresses: node N is `0x10 + N` |
+| `0x80` onward | Retired (were temporary discovery addresses) |
 |        `0xFF` | Broadcast                     |
 
-Node index 0 maps to `0x10`. Node index 1 maps to `0x11`.
+Node 0 is `0x10`, node 1 is `0x11`. The number is flashed into each board; see [node identity v1](node_identity_v1.md).
 
 ## Flags
 
@@ -81,7 +81,7 @@ The RS485 bus uses:
 - 1 stop bit
 - Automatic direction control on the prototype
 - Hub master polling
-- Node transmission only after a request or discovery slot
+- Node transmission only after a request
 
 Hub holds one mutex for the complete request, response, and acknowledgement transaction. This prevents two writers from interleaving bytes.
 

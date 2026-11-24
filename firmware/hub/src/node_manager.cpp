@@ -20,6 +20,14 @@
 namespace hub_nodes {
 namespace {
 
+/*
+ * One entry per node number. Node numbers are flashed into each board
+ * (rig_protocol/node_identity.hpp), so entry i is always address
+ * node_address(i). There is no discovery: the hub polls every slot, and a
+ * slot is present while its board answers. The UUID is information only,
+ * learned from the board's boot record; it stays zero for a board that was
+ * already running when the hub started, until that board next resets.
+ */
 struct Node {
   rig::protocol::DeviceUuid uuid{};
   std::uint8_t address{};
@@ -45,100 +53,53 @@ struct Command {
 };
 
 std::array<Node, rig::config::max_nodes> nodes;
-std::size_t node_count;
-std::uint32_t inventory_generation;
 K_MUTEX_DEFINE(nodes_mutex);
 K_MSGQ_DEFINE(commands, sizeof(Command), 24, 4);
 K_SEM_DEFINE(start_sem, 0, 1);
 rig::protocol::TelemetryLevel current_telemetry =
     rig::protocol::TelemetryLevel::standard;
-std::uint32_t nonce_state = 0x4B4F524FU;
 inline constexpr std::uint32_t assigned_poll_interval_ms = 10;
-
-std::uint32_t next_nonce() {
-  k_mutex_lock(&nodes_mutex, K_FOREVER);
-  nonce_state ^= nonce_state << 13U;
-  nonce_state ^= nonce_state >> 17U;
-  nonce_state ^= nonce_state << 5U;
-  const std::uint32_t result = nonce_state;
-  k_mutex_unlock(&nodes_mutex);
-  return result;
-}
+/* How often an absent slot is asked "are you there?". Each miss costs one
+ * 12 ms poll timeout, so with every slot empty this is about 2% of the bus
+ * per slot, and a board that powers up late appears within half a second. */
+inline constexpr std::uint32_t absent_probe_interval_ms = 500;
+inline constexpr std::uint32_t absent_after_ms = 3000;
+/* Every node board has the same peripherals; this was the offer's
+ * capability field when nodes were discovered. */
+inline constexpr std::uint32_t node_capabilities =
+    rig::protocol::capability_light_gate | rig::protocol::capability_rgb |
+    rig::protocol::capability_audio | rig::protocol::capability_valve |
+    rig::protocol::capability_ir | rig::protocol::capability_sync_capture;
 
 Node *find_address(std::uint8_t address) {
-  for (std::size_t i = 0; i < node_count; ++i) {
-    if (nodes[i].present && nodes[i].address == address) {
-      return &nodes[i];
+  for (Node &node : nodes) {
+    if (node.present && node.address == address) {
+      return &node;
     }
   }
   return nullptr;
 }
 
-Node *find_uuid(const rig::protocol::DeviceUuid &uuid) {
-  for (std::size_t i = 0; i < node_count; ++i) {
-    if (nodes[i].uuid == uuid) {
-      return &nodes[i];
-    }
-  }
-  return nullptr;
-}
-
-rig::protocol::Status assign(Node &node, std::uint8_t address,
-                               std::uint8_t logical_slot) {
-  rig::protocol::Assignment assignment;
-  k_mutex_lock(&nodes_mutex, K_FOREVER);
-  assignment.uuid = node.uuid;
-  k_mutex_unlock(&nodes_mutex);
-  assignment.address = address;
-  assignment.logical_slot = logical_slot;
-  std::uint8_t assignment_payload[16]{};
-  const std::size_t assignment_length = rig::protocol::encode_assignment(
-      assignment, assignment_payload, sizeof(assignment_payload));
-  rig::protocol::DiscoveryHeader header;
-  header.type = rig::protocol::DiscoveryType::assign;
-  header.nonce = next_nonce();
-  std::uint8_t message[48]{};
-  const std::size_t message_length = rig::protocol::encode_discovery(
-      header, assignment_payload, assignment_length, message, sizeof(message));
-  hub_rs485::Received response;
-  const int error = hub_rs485::exchange(
-      rig::config::broadcast_address, rig::transport::Channel::discovery,
-      message, message_length, response, 6);
-  if (error != 0) {
-    k_mutex_lock(&nodes_mutex, K_FOREVER);
-    ++node.transport_errors;
-    k_mutex_unlock(&nodes_mutex);
-    return rig::protocol::Status::transport_error;
-  }
-  rig::protocol::DiscoveryView response_view;
-  rig::protocol::Assignment response_assignment;
-
-  hub_debug::log("DISCOVERY_ASSIGN_RESPONSE error=%d length=%u\r\n", error,
-                    static_cast<unsigned>(response.length));
-
-  if (!rig::protocol::decode_discovery(response.payload.data(),
-                                        response.length, response_view) ||
-      response_view.header.type != rig::protocol::DiscoveryType::assigned ||
-      !rig::protocol::decode_assignment(response_view.payload,
-                                          response_view.header.payload_length,
-                                          response_assignment) ||
-      response_assignment.uuid != assignment.uuid ||
-      response_assignment.address != address) {
-    k_mutex_lock(&nodes_mutex, K_FOREVER);
-    ++node.transport_errors;
-    k_mutex_unlock(&nodes_mutex);
-    return rig::protocol::Status::bad_message;
-  }
-  k_mutex_lock(&nodes_mutex, K_FOREVER);
-  node.address = address;
-  node.logical_slot = logical_slot;
+/* Called with nodes_mutex held whenever a slot starts answering, or its
+ * board restarts: the node's clock and record queue start again. */
+void restart_link_state(Node &node) {
   node.queue_drained = false;
   node.have_pair = false;
-  node.present = true;
-  node.last_seen_ms = static_cast<std::uint32_t>(k_uptime_get());
   node.model.reset();
-  k_mutex_unlock(&nodes_mutex);
-  return rig::protocol::Status::ok;
+}
+
+bool boot_record_uuid(const rig::protocol::RecordView &record,
+                      rig::protocol::DeviceUuid &uuid) {
+  rig::protocol::TlvReader reader(record.payload, record.header.payload_length);
+  rig::protocol::FieldView field;
+  while (reader.next(field)) {
+    if (field.tag == static_cast<std::uint16_t>(rig::protocol::Field::uuid) &&
+        field.length == uuid.size()) {
+      std::memcpy(uuid.data(), field.value, uuid.size());
+      return true;
+    }
+  }
+  return false;
 }
 
 void publish_record(std::uint8_t source, rig::protocol::RecordType type,
@@ -339,11 +300,7 @@ void poll(Node &node) {
   }
   const bool was_present = node.present;
   const std::uint8_t address = node.address;
-  if (address == rig::config::unassigned_address) {
-    node.next_poll_ms = now_ms + 500U;
-    k_mutex_unlock(&nodes_mutex);
-    return;
-  }
+  const std::uint8_t slot = node.logical_slot;
   k_mutex_unlock(&nodes_mutex);
   hub_rs485::Received response;
   const int error = hub_rs485::exchange(
@@ -351,21 +308,26 @@ void poll(Node &node) {
       rig::transport::ack_required, true);
   if (error != 0) {
     k_mutex_lock(&nodes_mutex, K_FOREVER);
-    ++node.transport_errors;
-    node.next_poll_ms = now_ms + (was_present ? 10U : 500U);
+    // An empty slot is not an error, only a lost board is.
+    if (was_present) {
+      ++node.transport_errors;
+    }
+    node.next_poll_ms =
+        now_ms + (was_present ? assigned_poll_interval_ms
+                              : absent_probe_interval_ms);
     bool became_absent = false;
-    if (node.last_seen_ms != 0U &&
+    if (was_present &&
         static_cast<std::uint32_t>(k_uptime_get()) - node.last_seen_ms >
-            3000U) {
+            absent_after_ms) {
       node.present = false;
       node.model.reset();
-      became_absent = was_present;
-      if (became_absent) {
-        ++inventory_generation;
-      }
+      became_absent = true;
     }
     k_mutex_unlock(&nodes_mutex);
     if (became_absent) {
+      hub_debug::log("NODE_ABSENT node=%u address=0x%02x\r\n",
+                     static_cast<unsigned>(slot),
+                     static_cast<unsigned>(address));
       publish_inventory(node);
       hub_control::dependency_disconnected("Node disconnected");
     }
@@ -376,10 +338,13 @@ void poll(Node &node) {
   node.next_poll_ms = now_ms + assigned_poll_interval_ms;
   node.last_seen_ms = static_cast<std::uint32_t>(k_uptime_get());
   if (!was_present) {
-    ++inventory_generation;
+    restart_link_state(node);
   }
   k_mutex_unlock(&nodes_mutex);
   if (!was_present) {
+    hub_debug::log("NODE_PRESENT node=%u address=0x%02x\r\n",
+                   static_cast<unsigned>(slot),
+                   static_cast<unsigned>(address));
     publish_inventory(node);
   }
   if (response.length == 0U) {
@@ -396,6 +361,30 @@ void poll(Node &node) {
     ++node.transport_errors;
     k_mutex_unlock(&nodes_mutex);
     return;
+  }
+  if (record.header.type == rig::protocol::RecordType::boot) {
+    /*
+     * The board reset. With discovery, a reset board dropped off the bus
+     * and was re-assigned; now it answers again at once at the same
+     * address, so the reset has to be noticed here. Its clock restarted and
+     * it has left any session, so the model starts again and a running
+     * session is stopped, as it was when the board went missing.
+     */
+    rig::protocol::DeviceUuid uuid{};
+    const bool have_uuid = boot_record_uuid(record, uuid);
+    k_mutex_lock(&nodes_mutex, K_FOREVER);
+    restart_link_state(node);
+    if (have_uuid) {
+      node.uuid = uuid;
+    }
+    k_mutex_unlock(&nodes_mutex);
+    hub_debug::log("NODE_BOOT node=%u uuid=%02x%02x%02x%02x...\r\n",
+                   static_cast<unsigned>(slot), uuid[0], uuid[1], uuid[2],
+                   uuid[3]);
+    publish_inventory(node);
+    if (was_present) {
+      hub_control::dependency_disconnected("Node restarted");
+    }
   }
   if (record.header.type == rig::protocol::RecordType::sync_observation) {
     process_sync(node, record);
@@ -445,10 +434,12 @@ void handle_command(const Command &command) {
       response.length, command.host_transfer, rig::transport::response);
 }
 
+/* Tells every node the hub has restarted, so they make their outputs safe.
+ * Nodes keep their flashed addresses; the nonce is unused. */
 void release_all() {
   rig::protocol::DiscoveryHeader header;
   header.type = rig::protocol::DiscoveryType::release;
-  header.nonce = next_nonce();
+  header.nonce = 0;
   std::uint8_t message[16]{};
   const std::size_t length = rig::protocol::encode_discovery(
       header, nullptr, 0, message, sizeof(message));
@@ -458,128 +449,24 @@ void release_all() {
   k_sleep(K_MSEC(20));
 }
 
-std::size_t discovery_round(std::uint8_t round) {
-  hub_rs485::DiscoveredOffer offers[rig::config::max_nodes]{};
-  const std::size_t found = hub_rs485::discover(next_nonce(), round, offers,
-                                                   rig::config::max_nodes);
-  std::size_t added = 0;
-
-  hub_debug::log("DISCOVERY_ROUND round=%u offers=%u\r\n",
-                    static_cast<unsigned>(round), static_cast<unsigned>(found));
-
-  for (std::size_t i = 0; i < found; ++i) {
-    k_mutex_lock(&nodes_mutex, K_FOREVER);
-
-    hub_debug::log("DISCOVERY_OFFER uuid=%02x%02x%02x%02x...\r\n",
-                      offers[i].offer.uuid[0], offers[i].offer.uuid[1],
-                      offers[i].offer.uuid[2], offers[i].offer.uuid[3]);
-
-    Node *existing = find_uuid(offers[i].offer.uuid);
-    if (existing != nullptr) {
-      const bool was_present = existing->present;
-      const std::uint8_t address =
-          existing->logical_slot == 0xFFU
-              ? rig::config::discovery_address(
-                    static_cast<std::size_t>(existing - nodes.data()))
-              : rig::config::node_address(existing->logical_slot);
-      const std::uint8_t logical_slot = existing->logical_slot;
-      k_mutex_unlock(&nodes_mutex);
-      if (assign(*existing, address, logical_slot) ==
-          rig::protocol::Status::ok) {
-        ++added;
-        if (!was_present) {
-          k_mutex_lock(&nodes_mutex, K_FOREVER);
-          ++inventory_generation;
-          k_mutex_unlock(&nodes_mutex);
-          publish_inventory(*existing);
-        }
-      }
-      continue;
-    }
-    std::size_t node_index = node_count;
-    if (node_count >= nodes.size()) {
-      node_index = nodes.size();
-      for (std::size_t candidate = 0; candidate < node_count; ++candidate) {
-        if (!nodes[candidate].present) {
-          node_index = candidate;
-          break;
-        }
-      }
-      if (node_index == nodes.size()) {
-        k_mutex_unlock(&nodes_mutex);
-        continue;
-      }
-    } else {
-      ++node_count;
-    }
-    Node &node = nodes[node_index];
-    node = {};
-    node.uuid = offers[i].offer.uuid;
-    node.capabilities = offers[i].offer.capabilities;
-    node.present = false;
-    node.address = rig::config::unassigned_address;
-    const std::uint8_t temporary = rig::config::discovery_address(node_index);
-    k_mutex_unlock(&nodes_mutex);
-
-    const auto assign_status = assign(node, temporary, 0xFF);
-
-    hub_debug::log(
-        "DISCOVERY_ASSIGN uuid=%02x%02x... address=0x%02x status=%u\r\n",
-        node.uuid[0], node.uuid[1], temporary,
-        static_cast<unsigned>(assign_status));
-
-    if (assign_status == rig::protocol::Status::ok) {
-      k_mutex_lock(&nodes_mutex, K_FOREVER);
-      ++inventory_generation;
-      k_mutex_unlock(&nodes_mutex);
-      ++added;
-      publish_inventory(node);
-      k_mutex_lock(&nodes_mutex, K_FOREVER);
-      const std::uint8_t uuid0 = node.uuid[0];
-      const std::uint8_t uuid1 = node.uuid[1];
-      const std::uint8_t assigned_address = node.address;
-      k_mutex_unlock(&nodes_mutex);
-      hub_debug::log("DISCOVERY uuid=%02x%02x... address=0x%02x\r\n", uuid0,
-                        uuid1, assigned_address);
-    }
-  }
-  return added;
-}
-
 void manager_thread(void *, void *, void *) {
   k_sem_take(&start_sem, K_FOREVER);
   release_all();
-  std::uint8_t round = 0;
-  unsigned int empty_rounds = 0;
-  while (empty_rounds < 3U) {
-    if (discovery_round(round++) == 0U) {
-      ++empty_rounds;
-    } else {
-      empty_rounds = 0;
-    }
-  }
 
-  std::int64_t next_discovery = k_uptime_get() + 1000;
+  /*
+   * Presence is the poll loop itself: every slot is asked "are you there?"
+   * on each pass. Present slots are polled every 10 ms; absent ones every
+   * 500 ms, so the order boards and hub power up in does not matter.
+   */
   while (true) {
     Command command;
     while (k_msgq_get(&commands, &command, K_NO_WAIT) == 0) {
       handle_command(command);
     }
 
-    k_mutex_lock(&nodes_mutex, K_FOREVER);
-    const std::size_t count_snapshot = node_count;
-    k_mutex_unlock(&nodes_mutex);
-    for (std::size_t i = 0; i < count_snapshot; ++i) {
-      k_mutex_lock(&nodes_mutex, K_FOREVER);
-      Node *node = &nodes[i];
-      k_mutex_unlock(&nodes_mutex);
-      poll(*node);
-      publish_quality(*node, hub_time::now());
-    }
-
-    if (k_uptime_get() >= next_discovery) {
-      (void)discovery_round(round++);
-      next_discovery = k_uptime_get() + 1000;
+    for (Node &node : nodes) {
+      poll(node);
+      publish_quality(node, hub_time::now());
     }
     k_sleep(K_MSEC(1));
   }
@@ -592,8 +479,13 @@ K_THREAD_DEFINE(manager_thread_id, 4096, manager_thread, nullptr, nullptr,
 
 int initialize() {
   k_mutex_lock(&nodes_mutex, K_FOREVER);
-  node_count = 0;
-  inventory_generation = 0;
+  for (std::size_t slot = 0; slot < nodes.size(); ++slot) {
+    Node &node = nodes[slot];
+    node = {};
+    node.address = rig::config::node_address(slot);
+    node.logical_slot = static_cast<std::uint8_t>(slot);
+    node.capabilities = node_capabilities;
+  }
   current_telemetry = rig::protocol::TelemetryLevel::standard;
   k_mutex_unlock(&nodes_mutex);
   k_sem_give(&start_sem);
@@ -603,8 +495,8 @@ int initialize() {
 std::size_t count() {
   k_mutex_lock(&nodes_mutex, K_FOREVER);
   std::size_t result = 0;
-  for (std::size_t index = 0; index < node_count; ++index) {
-    result += nodes[index].present ? 1U : 0U;
+  for (const Node &node : nodes) {
+    result += node.present ? 1U : 0U;
   }
   k_mutex_unlock(&nodes_mutex);
   return result;
@@ -613,105 +505,29 @@ std::size_t count() {
 std::size_t inventory_bytes(std::uint8_t *destination, std::size_t capacity) {
   k_mutex_lock(&nodes_mutex, K_FOREVER);
   std::size_t present_count = 0;
-  for (std::size_t index = 0; index < node_count; ++index) {
-    present_count += nodes[index].present ? 1U : 0U;
+  for (const Node &node : nodes) {
+    present_count += node.present ? 1U : 0U;
   }
   const std::size_t needed = present_count * 18U;
   if (destination == nullptr || capacity < needed) {
     k_mutex_unlock(&nodes_mutex);
     return 0;
   }
+  // 18 bytes per present node: UUID (zero until its boot record has been
+  // seen), address, node number, capabilities.
   std::size_t offset = 0;
-  for (std::size_t i = 0; i < node_count; ++i) {
-    if (!nodes[i].present) {
+  for (const Node &node : nodes) {
+    if (!node.present) {
       continue;
     }
-    std::memcpy(destination + offset, nodes[i].uuid.data(),
-                nodes[i].uuid.size());
-    destination[offset + 12] = nodes[i].address;
-    destination[offset + 13] = nodes[i].logical_slot;
-    rig::wire::put_u32(destination + offset + 14, nodes[i].capabilities);
+    std::memcpy(destination + offset, node.uuid.data(), node.uuid.size());
+    destination[offset + 12] = node.address;
+    destination[offset + 13] = node.logical_slot;
+    rig::wire::put_u32(destination + offset + 14, node.capabilities);
     offset += 18;
   }
   k_mutex_unlock(&nodes_mutex);
   return needed;
-}
-
-rig::protocol::Status apply_inventory(const std::uint8_t *packed,
-                                        std::size_t length) {
-  if (packed == nullptr || length == 0U || length % 13U != 0U) {
-    return rig::protocol::Status::inventory_mismatch;
-  }
-
-  k_mutex_lock(&nodes_mutex, K_FOREVER);
-  std::size_t present_count = 0;
-  for (std::size_t index = 0; index < node_count; ++index) {
-    present_count += nodes[index].present ? 1U : 0U;
-  }
-  if (length / 13U != present_count) {
-    k_mutex_unlock(&nodes_mutex);
-    return rig::protocol::Status::inventory_mismatch;
-  }
-  const std::uint32_t expected_generation = inventory_generation;
-  std::array<bool, rig::config::max_nodes> matched{};
-  std::array<bool, rig::config::max_nodes> slots{};
-  for (std::size_t offset = 0; offset < length; offset += 13U) {
-    rig::protocol::DeviceUuid uuid;
-    std::memcpy(uuid.data(), packed + offset, uuid.size());
-    const std::uint8_t node_number = packed[offset + 12];
-    if (node_number >= rig::config::max_nodes) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::invalid_parameter;
-    }
-    if (slots[node_number]) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::inventory_mismatch;
-    }
-    slots[node_number] = true;
-    Node *node = find_uuid(uuid);
-    if (node == nullptr) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::inventory_mismatch;
-    }
-    if (!node->present) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::inventory_mismatch;
-    }
-    const std::size_t index = static_cast<std::size_t>(node - nodes.data());
-    if (matched[index]) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::inventory_mismatch;
-    }
-    matched[index] = true;
-  }
-  for (std::size_t index = 0; index < node_count; ++index) {
-    if (nodes[index].present && !matched[index]) {
-      k_mutex_unlock(&nodes_mutex);
-      return rig::protocol::Status::inventory_mismatch;
-    }
-  }
-  k_mutex_unlock(&nodes_mutex);
-
-  for (std::size_t offset = 0; offset < length; offset += 13U) {
-    rig::protocol::DeviceUuid uuid;
-    std::memcpy(uuid.data(), packed + offset, uuid.size());
-    const std::uint8_t node_number = packed[offset + 12];
-    k_mutex_lock(&nodes_mutex, K_FOREVER);
-    Node *node = find_uuid(uuid);
-    k_mutex_unlock(&nodes_mutex);
-    if (node == nullptr ||
-        assign(*node, rig::config::node_address(node_number),
-               node_number) != rig::protocol::Status::ok) {
-      return rig::protocol::Status::transport_error;
-    }
-  }
-  k_mutex_lock(&nodes_mutex, K_FOREVER);
-  const bool unchanged = inventory_generation == expected_generation;
-  k_mutex_unlock(&nodes_mutex);
-  if (!unchanged) {
-    return rig::protocol::Status::inventory_mismatch;
-  }
-  return rig::protocol::Status::ok;
 }
 
 bool queue_command(std::uint8_t destination, const std::uint8_t *message,
@@ -729,9 +545,9 @@ bool queue_command(std::uint8_t destination, const std::uint8_t *message,
 
 void queue_command_for_all(const std::uint8_t *message, std::size_t length) {
   k_mutex_lock(&nodes_mutex, K_FOREVER);
-  for (std::size_t i = 0; i < node_count; ++i) {
-    if (nodes[i].present && nodes[i].logical_slot != 0xFFU) {
-      (void)queue_command(nodes[i].address, message, length, 0);
+  for (const Node &node : nodes) {
+    if (node.present) {
+      (void)queue_command(node.address, message, length, 0);
     }
   }
   k_mutex_unlock(&nodes_mutex);
@@ -764,7 +580,7 @@ bool snapshot(std::size_t index, NodeSnapshot &output) {
   k_mutex_lock(&nodes_mutex, K_FOREVER);
   const Node *selected = nullptr;
   std::size_t visible_index = 0;
-  for (std::size_t raw_index = 0; raw_index < node_count; ++raw_index) {
+  for (std::size_t raw_index = 0; raw_index < nodes.size(); ++raw_index) {
     if (!nodes[raw_index].present) {
       continue;
     }

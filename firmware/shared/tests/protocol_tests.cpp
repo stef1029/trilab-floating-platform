@@ -6,6 +6,7 @@
 #include "rig_protocol/clock_model.hpp"
 #include "rig_protocol/record_protocol.hpp"
 #include "rig_protocol/discovery_protocol.hpp"
+#include "rig_protocol/node_identity.hpp"
 #include "rig_protocol/system_config.hpp"
 #include "rig_protocol/tlv.hpp"
 #include "rig_protocol/transport.hpp"
@@ -156,33 +157,23 @@ int main() {
   assert(protocol::record_visible_at(protocol::RecordType::sync_observation,
                                      protocol::TelemetryLevel::full));
 
-  protocol::DeviceUuid uuid{{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}};
-  const auto slot_a = protocol::discovery_slot(uuid, 123, 16);
-  const auto slot_b = protocol::discovery_slot(uuid, 123, 16);
-  assert(slot_a == slot_b && slot_a < 16);
-
-  protocol::Assignment assignment;
-  assignment.uuid = uuid;
-  assignment.address = 0x10;
-  assignment.logical_slot = 0;
-  std::uint8_t assignment_payload[16]{};
-  const std::size_t assignment_size = protocol::encode_assignment(
-      assignment, assignment_payload, sizeof(assignment_payload));
+  // The hub's boot-time release, the one discovery message still sent.
   protocol::DiscoveryHeader discovery_header;
-  discovery_header.type = protocol::DiscoveryType::assign;
-  discovery_header.nonce = 456;
-  std::uint8_t discovery[48]{};
-  const std::size_t discovery_size =
-      protocol::encode_discovery(discovery_header, assignment_payload,
-                                assignment_size, discovery, sizeof(discovery));
+  discovery_header.type = protocol::DiscoveryType::release;
+  std::uint8_t discovery[16]{};
+  const std::size_t discovery_size = protocol::encode_discovery(
+      discovery_header, nullptr, 0, discovery, sizeof(discovery));
+  assert(discovery_size == protocol::discovery_header_size);
   protocol::DiscoveryView discovery_view;
-  protocol::Assignment decoded_assignment;
   assert(protocol::decode_discovery(discovery, discovery_size, discovery_view));
-  assert(protocol::decode_assignment(discovery_view.payload,
-                                     discovery_view.header.payload_length,
-                                     decoded_assignment));
-  assert(decoded_assignment.uuid == uuid);
-  assert(decoded_assignment.address == 0x10);
+  assert(discovery_view.header.type == protocol::DiscoveryType::release);
+  assert(discovery_view.header.payload_length == 0);
+  discovery[10] = 1; // reserved bytes must be zero
+  assert(!protocol::decode_discovery(discovery, discovery_size, discovery_view));
+
+  assert(config::node_address(3) == 0x13);
+  assert(config::is_node_address(config::node_address(config::max_nodes - 1)));
+  assert(!config::is_node_address(config::node_address(config::max_nodes)));
 
   time::AffineClockModel<8> clock;
   for (std::uint64_t index = 0; index < 8; ++index) {
@@ -196,6 +187,44 @@ int main() {
   assert(clock.predict(50'000'000ULL, predicted));
   assert(clock.inverse(predicted, inverse));
   assert(inverse >= 49'999'999ULL && inverse <= 50'000'001ULL);
+
+  // Node identity page. The expected bytes are what flash.py writes for
+  // board 3; if this fails, the firmware and the flashing script disagree.
+  const std::uint8_t expected_identity[identity::record_size] = {
+      0x52, 0x4E, 0x49, 0x44, 0x01, 0x03, 0xFC, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x35, 0xA2};
+  std::uint8_t identity_record[identity::record_size]{};
+  assert(identity::encode_identity(3, identity_record,
+                                   sizeof(identity_record)) ==
+         identity::record_size);
+  assert(std::memcmp(identity_record, expected_identity,
+                     sizeof(expected_identity)) == 0);
+  std::uint8_t node_id = 0xFF;
+  assert(identity::decode_identity(identity_record, sizeof(identity_record),
+                                   node_id));
+  assert(node_id == 3);
+
+  for (std::uint8_t id = 0; id < config::max_nodes; ++id) {
+    assert(identity::encode_identity(id, identity_record,
+                                     sizeof(identity_record)) != 0);
+    assert(identity::decode_identity(identity_record, sizeof(identity_record),
+                                     node_id) &&
+           node_id == id);
+  }
+  assert(identity::encode_identity(static_cast<std::uint8_t>(config::max_nodes),
+                                   identity_record,
+                                   sizeof(identity_record)) == 0);
+
+  std::uint8_t erased[identity::record_size];
+  std::memset(erased, 0xFF, sizeof(erased));
+  assert(!identity::decode_identity(erased, sizeof(erased), node_id));
+
+  std::uint8_t corrupt[identity::record_size];
+  std::memcpy(corrupt, expected_identity, sizeof(corrupt));
+  corrupt[5] = 2; // id changed without fixing inverse or CRC
+  assert(!identity::decode_identity(corrupt, sizeof(corrupt), node_id));
+  assert(!identity::decode_identity(expected_identity,
+                                    identity::record_size - 1U, node_id));
 
   return 0;
 }
