@@ -5279,26 +5279,6 @@
 		)
 		(uuid "6222e7e2-d271-44eb-83fa-c93c34a5f26f")
 	)
-	(text_box "H-Bridge controller for solenoid valve, grounds IN2 since it's only one way control"
-		(exclude_from_sim no)
-		(at 205.74 139.7 0)
-		(size 30.48 10.16)
-		(margins 0.9525 0.9525 0.9525 0.9525)
-		(stroke
-			(width 0)
-			(type solid)
-		)
-		(fill
-			(type none)
-		)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left top)
-		)
-		(uuid "71b3072a-4c8a-4463-baf3-0e9aa58e91cf")
-	)
 	(text_box "Daisy chain connection part of each reward port. RS485 converter chips are small and therefore convenient for both actual communication and sync signal conversion"
 		(exclude_from_sim no)
 		(at 78.74 54.61 0)
@@ -5542,6 +5522,12 @@
 		(uuid "bb1fb4b5-9352-43f0-905f-080fa16fc792")
 	)
 	(junction
+		(at 271.78 130.81)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "bd3951fc-c8b3-4523-b204-d788569b7cba")
+	)
+	(junction
 		(at 91.44 124.46)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -5584,6 +5570,12 @@
 		(uuid "df0f177e-f93b-414c-90d2-0238bb3a2d8a")
 	)
 	(junction
+		(at 271.78 127)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "ea1d286d-a654-491c-9096-48a526b18250")
+	)
+	(junction
 		(at 153.67 154.94)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -5594,12 +5586,6 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "f55747cf-cc10-4f87-a425-4ae1ce81e60b")
-	)
-	(junction
-		(at 274.32 127)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "f61ee592-ed35-44c6-8341-83770679003d")
 	)
 	(junction
 		(at 124.46 173.99)
@@ -5636,10 +5622,6 @@
 	(no_connect
 		(at 252.73 49.53)
 		(uuid "95a5c9ec-7fa4-4d5f-ad7c-678e9fe97fc7")
-	)
-	(no_connect
-		(at 176.53 46.99)
-		(uuid "9761fe8b-1820-4110-a011-9be9629a09bc")
 	)
 	(no_connect
 		(at 157.48 49.53)
@@ -5993,6 +5975,16 @@
 	)
 	(wire
 		(pts
+			(xy 271.78 127) (xy 273.05 127)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3dcdac37-ed50-42b2-bf73-f485e167efd9")
+	)
+	(wire
+		(pts
 			(xy 48.26 182.88) (xy 57.15 182.88)
 		)
 		(stroke
@@ -6140,6 +6132,16 @@
 			(type default)
 		)
 		(uuid "5e9f5c8b-c1c1-4a27-82c2-d9df0e2830ee")
+	)
+	(wire
+		(pts
+			(xy 271.78 130.81) (xy 273.05 130.81)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "5fbb11e2-d34e-4905-8859-f6c7a33da99f")
 	)
 	(wire
 		(pts
@@ -6313,6 +6315,16 @@
 	)
 	(wire
 		(pts
+			(xy 260.35 130.81) (xy 271.78 130.81)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "8c22c6d6-d701-4a2f-aae3-75e55a9ed669")
+	)
+	(wire
+		(pts
 			(xy 57.15 120.65) (xy 66.04 120.65)
 		)
 		(stroke
@@ -6323,7 +6335,7 @@
 	)
 	(wire
 		(pts
-			(xy 260.35 127) (xy 274.32 127)
+			(xy 260.35 127) (xy 271.78 127)
 		)
 		(stroke
 			(width 0)
@@ -6450,16 +6462,6 @@
 			(type default)
 		)
 		(uuid "a0743ead-8a28-4268-98bf-45729a8cecda")
-	)
-	(wire
-		(pts
-			(xy 276.86 127) (xy 274.32 127)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a144a63c-ec81-47f5-bba8-45629ccd6ea5")
 	)
 	(wire
 		(pts
@@ -7142,7 +7144,7 @@
 		(uuid "80286960-ef5f-4655-b99a-31859418ad14")
 	)
 	(label "TIM1_CH1"
-		(at 276.86 127 90)
+		(at 273.05 127 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -7171,6 +7173,16 @@
 		)
 		(uuid "8de2085a-ac72-4ade-b74f-272ff8969844")
 	)
+	(label "TIM1_CH2"
+		(at 273.05 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "8f504875-944d-4256-ba98-d0b22d257ef2")
+	)
 	(label "3V3"
 		(at 119.38 154.94 90)
 		(effects
@@ -7180,6 +7192,16 @@
 			(justify left bottom)
 		)
 		(uuid "931cf85b-1e6b-4166-9e3f-d21cc6acc5f7")
+	)
+	(label "TIM1_CH2"
+		(at 176.53 46.99 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "9708d0df-6487-4166-bfad-66a6ff5869ca")
 	)
 	(label "TIM2_CH1"
 		(at 99.06 130.81 270)
@@ -8277,7 +8299,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 274.32 134.62 270)
+		(at 271.78 119.38 90)
 		(mirror x)
 		(unit 1)
 		(body_style 1)
@@ -8289,7 +8311,7 @@
 		(fields_autoplaced yes)
 		(uuid "1a708b23-74fc-4551-9217-432b0ee63091")
 		(property "Reference" "#PWR044"
-			(at 267.97 134.62 0)
+			(at 278.13 119.38 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8300,7 +8322,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 269.24 134.62 0)
+			(at 276.86 119.38 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -8310,7 +8332,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 274.32 134.62 0)
+			(at 271.78 119.38 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8321,7 +8343,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 274.32 134.62 0)
+			(at 271.78 119.38 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8332,7 +8354,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 274.32 134.62 0)
+			(at 271.78 119.38 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8748,85 +8770,6 @@
 			(project "reward_port"
 				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
 					(reference "#PWR011")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 260.35 130.81 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "2a6cf8a9-cb57-433c-81a0-98da72a72625")
-		(property "Reference" "#PWR040"
-			(at 266.7 130.81 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 264.16 130.8099 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 260.35 130.81 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 260.35 130.81 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 260.35 130.81 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "4724711f-d714-4fe3-9428-e25ad0575c2a")
-		)
-		(instances
-			(project "reward_port"
-				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
-					(reference "#PWR040")
 					(unit 1)
 				)
 			)
@@ -11921,7 +11864,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 274.32 130.81 0)
+		(at 271.78 123.19 0)
 		(mirror y)
 		(unit 1)
 		(body_style 1)
@@ -11932,7 +11875,7 @@
 		(dnp no)
 		(uuid "9469586f-037b-45cc-bf42-9b93f2d77d24")
 		(property "Reference" "R23"
-			(at 276.86 130.556 90)
+			(at 274.32 122.936 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -11942,7 +11885,7 @@
 			)
 		)
 		(property "Value" "10k"
-			(at 279.4 130.556 90)
+			(at 276.86 122.936 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -11952,7 +11895,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
-			(at 276.098 130.81 90)
+			(at 273.558 123.19 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11963,7 +11906,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 274.32 130.81 0)
+			(at 271.78 123.19 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11974,7 +11917,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 274.32 130.81 0)
+			(at 271.78 123.19 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -12642,6 +12585,84 @@
 			(project "reward_port"
 				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
 					(reference "#PWR025")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 271.78 138.43 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "9cd5cd8b-2086-47f5-9ad8-bf42760fa7a3")
+		(property "Reference" "#PWR045"
+			(at 278.13 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 276.86 138.43 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 271.78 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 271.78 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 271.78 138.43 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "dce8ef86-ac07-461c-89d0-db320e44335e")
+		)
+		(instances
+			(project "reward_port"
+				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
+					(reference "#PWR045")
 					(unit 1)
 				)
 			)
@@ -14292,6 +14313,85 @@
 			(project "reward_port"
 				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
 					(reference "#PWR04")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 271.78 134.62 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "c80298b9-7983-4cdc-8c7e-74a70f766ea4")
+		(property "Reference" "R24"
+			(at 274.32 134.874 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "10k"
+			(at 276.86 134.874 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 273.558 134.62 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 271.78 134.62 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 271.78 134.62 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "28712664-1976-4c17-87ce-921b86d28f6a")
+		)
+		(pin "2"
+			(uuid "fc05b0df-31a7-458e-85df-21614a871cc9")
+		)
+		(instances
+			(project "reward_port"
+				(path "/47741335-858b-474f-b1bb-4392dca6d0db"
+					(reference "R24")
 					(unit 1)
 				)
 			)

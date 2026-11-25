@@ -578,7 +578,6 @@
       "netlist": "",
       "plot": "jlcpcb/",
       "specctra_dsn": "",
-      "step": "",
       "vrml": ""
     },
     "page_layout_descr_file": ""
@@ -701,7 +700,7 @@
         "uuid": "47741335-858b-474f-b1bb-4392dca6d0db"
       }
     ],
-    "used_designators": "R24,#PWR45",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
