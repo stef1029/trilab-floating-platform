@@ -49,6 +49,8 @@ void all_safe(std::uint64_t now_ticks = 0);
 void set_rgb(std::uint8_t red, std::uint8_t green, std::uint8_t blue,
              std::uint32_t duration_ms, std::uint64_t now_ticks);
 void set_ir(bool enabled, std::uint64_t now_ticks);
+/* Sets the IR resting state that all_safe() restores, and applies it now. */
+void set_ir_default(bool enabled, std::uint64_t now_ticks);
 
 rig::protocol::Status set_audio(AudioMode mode, std::uint32_t frequency_hz,
                                   std::uint32_t low_hz, std::uint32_t high_hz,

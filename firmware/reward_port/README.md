@@ -141,7 +141,7 @@ Startup:
 5. Require at least 400 ADC counts of separation
 6. Emit a critical fault when the test fails
 
-The emitter returns to off after the startup test and is enabled when a session starts. A 100 ms digital debounce suppresses small tremor edges while keeping the expected mouse snout event rate.
+If the test passes, the emitter stays on from boot and the gate reports beam breaks whether or not a session is running. Making the outputs safe (session start or stop, Hub's boot-time release, communication timeout) leaves it on. A `set IR` command can still switch it off until the next of those. If the test fails, the emitter stays off. A 100 ms digital debounce suppresses small tremor edges while keeping the expected mouse snout event rate.
 
 ## Audio
 

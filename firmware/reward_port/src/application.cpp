@@ -176,11 +176,9 @@ Status execute(const CommandMessageView &command, std::uint64_t now_ticks) {
                active_session != command.header.session_id) {
       status = Status::busy;
     } else {
+      /* Leaves the IR beam on if the boot light test passed. */
       node_outputs::all_safe(now_ticks);
       active_session = command.header.session_id;
-      if (boot_light_passed) {
-        node_outputs::set_ir(true, now_ticks);
-      }
     }
     break;
 
@@ -435,6 +433,10 @@ void initialize(std::uint32_t reset_cause, bool light_test_passed,
                                  node_timebase::now(), 0, fault_payload,
                                  fault.size());
   }
+
+  /* The light gate runs from boot, not only during a session. Done after
+   * the boot record so the IR output event follows it. */
+  node_outputs::set_ir_default(light_test_passed, node_timebase::now());
 }
 
 std::size_t handle_host(const std::uint8_t *message, std::size_t length,

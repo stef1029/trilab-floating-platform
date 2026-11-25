@@ -169,6 +169,8 @@ volatile std::uint32_t audio_dma_last_callback_tick;
 std::uint64_t audio_last_diagnostic_ticks;
 bool audio_active;
 bool ir_enabled;
+/* IR state that all_safe() returns to. On once the boot light test passes. */
+bool ir_default;
 
 std::uint64_t ticks_from_us(std::uint64_t microseconds) {
   return microseconds * ticks_per_us;
@@ -707,6 +709,7 @@ void initialize() {
   rgb_stop_ticks = 0;
   audio_stop_ticks = 0;
   ir_enabled = false;
+  ir_default = false;
 
   valve_config = ValveConfiguration{};
   valve_phase = ValvePhase::idle;
@@ -791,11 +794,18 @@ void all_safe(std::uint64_t now_ticks) {
     valve_idle();
   }
 
-  if (ir_enabled) {
-    set_ir(false, now_ticks);
+  /* The IR emitter is not a hazard, so "safe" means its resting state:
+   * on for a board whose light gate passed its boot test, off otherwise. */
+  if (ir_enabled != ir_default) {
+    set_ir(ir_default, now_ticks);
   } else {
-    node_light::set_emitter_enabled(false);
+    node_light::set_emitter_enabled(ir_default);
   }
+}
+
+void set_ir_default(bool enabled, std::uint64_t now_ticks) {
+  ir_default = enabled;
+  set_ir(enabled, now_ticks);
 }
 
 void set_rgb(std::uint8_t red, std::uint8_t green, std::uint8_t blue,

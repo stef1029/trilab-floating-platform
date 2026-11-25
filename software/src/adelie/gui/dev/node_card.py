@@ -157,8 +157,12 @@ class NodeCard(QFrame):
         layout.addLayout(rgb)
         layout.addLayout(rgb_buttons)
 
-        self.ir_button = QPushButton("IR emitter off")
+        # Boards switch their IR beam on at boot (if the light gate passed its
+        # self test), so the button starts on. It shows the last request,
+        # not a reading from the board.
+        self.ir_button = QPushButton("IR emitter on")
         self.ir_button.setCheckable(True)
+        self.ir_button.setChecked(True)
         self.ir_button.toggled.connect(self._set_ir_enabled)
         layout.addWidget(self.ir_button)
 
