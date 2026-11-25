@@ -25,6 +25,18 @@ struct Diagnostics {
   std::uint32_t decode_errors{};
   std::uint32_t reassembly_errors{};
   std::uint32_t transmit_errors{};
+  // Receiver health. A receive stop is a UART error that halted reception
+  // (framing, overrun, ...); the driver then restarts it from the callback.
+  std::uint32_t receive_stops{};
+  std::uint32_t receive_restart_failures{};
+  // Full receiver resets made by the stuck-bus watchdog, and how many of
+  // them were followed by valid frames again.
+  std::uint32_t receiver_resets{};
+  std::uint32_t receiver_recoveries{};
+  // Resets where the driver never confirmed the stop and the receiver had
+  // to be kicked in hardware.
+  std::uint32_t receiver_kicks{};
+  bool receiver_running{};
 };
 
 int initialize();

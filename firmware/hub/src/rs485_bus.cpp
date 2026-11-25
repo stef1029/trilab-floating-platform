@@ -6,6 +6,7 @@
 
 #include <gpiote_nrfx.h>
 #include <hal/nrf_gpio.h>
+#include <hal/nrf_uarte.h>
 
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
@@ -33,6 +34,48 @@ atomic_t timeout_count;
 atomic_t decode_error_count;
 atomic_t reassembly_error_count;
 atomic_t transmit_error_count;
+atomic_t receive_stop_count;
+atomic_t receive_restart_failure_count;
+atomic_t receiver_reset_count;
+atomic_t receiver_recovery_count;
+atomic_t receiver_kick_count;
+
+/*
+ * Receiver watchdog.
+ *
+ * A UART error stops reception and the driver callback restarts it. If that
+ * restart chain ever breaks, or the UART is left in a state where it sees
+ * bytes but never a valid frame, every node drops off the bus and nothing
+ * restarts it. Nodes keep resending their unacknowledged records, so the bus
+ * never recovers on its own.
+ *
+ * The watchdog runs in exchange(), under the bus mutex. When the bus had
+ * valid traffic recently but none for stuck_after_ms, it stops reception,
+ * waits for the driver to confirm, and starts it again. It backs off between
+ * attempts so an intentionally empty bus is not reset forever. It never
+ * reboots the hub.
+ */
+inline constexpr std::int64_t stuck_after_ms = 1000;
+inline constexpr std::int64_t watchdog_active_for_ms = 60'000;
+inline constexpr std::int64_t first_reset_interval_ms = 1000;
+inline constexpr std::int64_t max_reset_interval_ms = 32'000;
+inline constexpr std::int32_t rx_disable_wait_ms = 20;
+
+atomic_t receiver_running;
+// Set while the watchdog stops reception itself, so the RX_DISABLED callback
+// leaves the restart to the watchdog.
+atomic_t deliberate_stop;
+K_SEM_DEFINE(receiver_disabled, 0, 1);
+// Bytes and UART stops since the last valid frame, for the stuck report.
+atomic_t bytes_since_valid;
+atomic_t stops_since_valid;
+
+// Only touched by the thread holding bus_mutex.
+std::int64_t last_valid_frame_ms;
+bool seen_valid_frame;
+std::int64_t last_reset_ms;
+std::int64_t reset_interval_ms = first_reset_interval_ms;
+std::uint32_t resets_since_valid;
 
 /*
  * nRF UARTE EasyDMA keeps receiving while Bluetooth radio interrupts preempt
@@ -79,6 +122,7 @@ void ring_put(const std::uint8_t *bytes, std::size_t length) {
   if (overflowed) {
     note_receive_fault();
   }
+  (void)atomic_add(&bytes_since_valid, static_cast<atomic_val_t>(length));
   if (stored) {
     k_sem_give(&receive_ready);
   }
@@ -108,8 +152,13 @@ void clear_receive_ring() {
 
 int start_receiver(const device *receiver) {
   dma_buffer_in_use = {true, false};
-  return uart_rx_enable(receiver, dma_buffers[0].data(), dma_buffers[0].size(),
-                        receive_idle_timeout_us);
+  const int error =
+      uart_rx_enable(receiver, dma_buffers[0].data(), dma_buffers[0].size(),
+                     receive_idle_timeout_us);
+  if (error == 0) {
+    atomic_set(&receiver_running, 1);
+  }
+  return error;
 }
 
 void uart_event_callback(const device *receiver, struct uart_event *event,
@@ -120,6 +169,12 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
     break;
 
   case UART_RX_BUF_REQUEST: {
+    // While the watchdog is stopping or kicking the receiver, offering a
+    // second buffer would arm the ENDRX->STARTRX short and restart reception
+    // behind the driver's back.
+    if (atomic_get(&deliberate_stop) != 0) {
+      break;
+    }
     for (std::size_t index = 0; index < dma_buffers.size(); ++index) {
       if (dma_buffer_in_use[index]) {
         continue;
@@ -146,17 +201,29 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
 
   case UART_RX_STOPPED:
     note_receive_fault();
+    atomic_inc(&receive_stop_count);
+    atomic_inc(&stops_since_valid);
 
     hub_debug::log("RS485_RX_STOPPED reason=0x%08x\r\n",
                       static_cast<unsigned>(event->data.rx_stop.reason));
 
     break;
 
-  case UART_RX_DISABLED:
-    if (start_receiver(receiver) != 0) {
+  case UART_RX_DISABLED: {
+    atomic_set(&receiver_running, 0);
+    if (atomic_get(&deliberate_stop) != 0) {
+      // The watchdog stopped reception and restarts it itself.
+      k_sem_give(&receiver_disabled);
+      break;
+    }
+    const int error = start_receiver(receiver);
+    if (error != 0) {
       note_receive_fault();
+      atomic_inc(&receive_restart_failure_count);
+      hub_debug::log("RS485_RX_RESTART_FAILED err=%d\r\n", error);
     }
     break;
+  }
 
   case UART_TX_DONE:
     // The final stop bit has left UARTE. Release the half-duplex bus
@@ -173,6 +240,163 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
     k_sem_give(&transmit_complete);
     break;
   }
+}
+
+/*
+ * Read-only snapshot of the UARTE and its RX pin, logged before a reset so a
+ * stuck receiver can be diagnosed afterwards. Reading these registers has no
+ * side effects (ERRORSRC clears only on write).
+ */
+void log_receiver_snapshot(const char *when) {
+  auto *const regs =
+      reinterpret_cast<NRF_UARTE_Type *>(DT_REG_ADDR(UART_NODE));
+  const std::uint32_t psel_rxd = regs->PSEL.RXD;
+  const bool rx_connected = (psel_rxd & 0x80000000U) == 0U;
+  const std::uint32_t rx_pin = psel_rxd & 0x1FU;
+  const std::uint32_t rx_port = (psel_rxd >> 5U) & 0x1U;
+  std::uint32_t rx_pin_cnf = 0xFFFFFFFFU;
+  std::uint32_t rx_pin_level = 0xFFFFFFFFU;
+  if (rx_connected) {
+    NRF_GPIO_Type *const port = rx_port == 0U ? NRF_P0 : NRF_P1;
+    rx_pin_cnf = port->PIN_CNF[rx_pin];
+    rx_pin_level = (port->IN >> rx_pin) & 0x1U;
+  }
+  hub_debug::log(
+      "RS485_RX_SNAPSHOT when=%s running=%d enable=%u errorsrc=0x%02x "
+      "baud=0x%08x inten=0x%08x rxd_amount=%u rx_pin=P%u.%02u%s "
+      "pin_cnf=0x%08x pin_in=%u bytes_since_valid=%d stops_since_valid=%d\r\n",
+      when, static_cast<int>(atomic_get(&receiver_running)),
+      static_cast<unsigned>(regs->ENABLE),
+      static_cast<unsigned>(regs->ERRORSRC),
+      static_cast<unsigned>(regs->BAUDRATE),
+      static_cast<unsigned>(regs->INTENSET),
+      static_cast<unsigned>(regs->RXD.AMOUNT), static_cast<unsigned>(rx_port),
+      static_cast<unsigned>(rx_pin), rx_connected ? "" : "(disconnected)",
+      static_cast<unsigned>(rx_pin_cnf), static_cast<unsigned>(rx_pin_level),
+      static_cast<int>(atomic_get(&bytes_since_valid)),
+      static_cast<int>(atomic_get(&stops_since_valid)));
+
+  // Pending hardware events and interrupt state. A stop that never completes
+  // shows here: rxto=1 with the IRQ not pending means the driver saw and
+  // discarded it; rxto=0 means the hardware never produced it.
+  const auto irq = static_cast<IRQn_Type>(DT_IRQN(UART_NODE));
+  hub_debug::log(
+      "RS485_RX_EVENTS when=%s rxstarted=%u endrx=%u rxto=%u error=%u "
+      "rxdrdy=%u txstopped=%u irq_enabled=%u irq_pending=%u rxd_ptr=0x%08x "
+      "rxd_maxcnt=%u\r\n",
+      when, static_cast<unsigned>(regs->EVENTS_RXSTARTED),
+      static_cast<unsigned>(regs->EVENTS_ENDRX),
+      static_cast<unsigned>(regs->EVENTS_RXTO),
+      static_cast<unsigned>(regs->EVENTS_ERROR),
+      static_cast<unsigned>(regs->EVENTS_RXDRDY),
+      static_cast<unsigned>(regs->EVENTS_TXSTOPPED),
+      static_cast<unsigned>(NVIC_GetEnableIRQ(irq)),
+      static_cast<unsigned>(NVIC_GetPendingIRQ(irq)),
+      static_cast<unsigned>(regs->RXD.PTR),
+      static_cast<unsigned>(regs->RXD.MAXCNT));
+}
+
+/*
+ * Kick a wedged receiver.
+ *
+ * Observed failure: after a burst of framing errors the UARTE receiver has
+ * stopped in hardware (no RXDRDY although bytes reach the RX pin), but the
+ * driver never processed the RXTO that marks the stop. It then waits for an
+ * RXTO forever, so uart_rx_disable() never completes and uart_rx_enable()
+ * returns -EBUSY. A stopped receiver produces no RXTO when asked to stop
+ * again, so the driver cannot get out by itself.
+ *
+ * Start the receiver in hardware (it still points at the driver's own DMA
+ * buffer) and stop it straight away. A running receiver answers STOPRX with
+ * ENDRX and RXTO; the driver, which is already expecting RXTO after the
+ * uart_rx_disable() call, finishes its stop and delivers RX_DISABLED.
+ * deliberate_stop must be set, so the RX_BUF_REQUEST that STARTRX raises is
+ * ignored and the ENDRX->STARTRX short stays off.
+ */
+void kick_receiver() {
+  auto *const regs =
+      reinterpret_cast<NRF_UARTE_Type *>(DT_REG_ADDR(UART_NODE));
+  nrf_uarte_shorts_disable(regs, NRF_UARTE_SHORT_ENDRX_STARTRX);
+  nrf_uarte_task_trigger(regs, NRF_UARTE_TASK_STARTRX);
+  k_busy_wait(20);
+  nrf_uarte_task_trigger(regs, NRF_UARTE_TASK_STOPRX);
+}
+
+/*
+ * Stop reception, wait for the driver to confirm, then start it again. If
+ * the driver never confirms the stop, kick the receiver so it can, then
+ * start again. Caller holds bus_mutex.
+ */
+void reset_receiver() {
+  atomic_inc(&receiver_reset_count);
+  log_receiver_snapshot("before_reset");
+
+  k_sem_reset(&receiver_disabled);
+  atomic_set(&deliberate_stop, 1);
+  const int disable_error = uart_rx_disable(uart);
+  int wait_error = 0;
+  int kick_wait_error = 1; // 1 = no kick needed
+  if (disable_error == 0) {
+    wait_error = k_sem_take(&receiver_disabled, K_MSEC(rx_disable_wait_ms));
+    if (wait_error != 0) {
+      atomic_inc(&receiver_kick_count);
+      kick_receiver();
+      kick_wait_error =
+          k_sem_take(&receiver_disabled, K_MSEC(rx_disable_wait_ms));
+      log_receiver_snapshot("after_kick");
+    }
+  }
+  atomic_set(&deliberate_stop, 0);
+
+  // -EFAULT from uart_rx_disable() means the driver had no receive buffer,
+  // so it already considered reception stopped.
+  clear_receive_ring();
+  const int start_error = start_receiver(uart);
+  if (start_error != 0) {
+    atomic_inc(&receive_restart_failure_count);
+  }
+  hub_debug::log("RS485_RX_RESET disable_err=%d wait_err=%d kick_wait_err=%d "
+                 "start_err=%d attempt=%u\r\n",
+                 disable_error, wait_error, kick_wait_error, start_error,
+                 static_cast<unsigned>(resets_since_valid + 1U));
+  log_receiver_snapshot("after_reset");
+}
+
+void note_valid_frame() {
+  const std::int64_t now = k_uptime_get();
+  if (resets_since_valid != 0U) {
+    atomic_inc(&receiver_recovery_count);
+    hub_debug::log("RS485_RX_RECOVERED silent_ms=%d resets=%u\r\n",
+                   static_cast<int>(now - last_valid_frame_ms),
+                   static_cast<unsigned>(resets_since_valid));
+  }
+  last_valid_frame_ms = now;
+  seen_valid_frame = true;
+  resets_since_valid = 0U;
+  reset_interval_ms = first_reset_interval_ms;
+  atomic_clear(&bytes_since_valid);
+  atomic_clear(&stops_since_valid);
+}
+
+// Caller holds bus_mutex.
+void check_receiver_watchdog() {
+  if (!seen_valid_frame) {
+    return; // Nothing has ever answered, so silence is not a fault.
+  }
+  const std::int64_t now = k_uptime_get();
+  const std::int64_t silent_ms = now - last_valid_frame_ms;
+  if (silent_ms < stuck_after_ms || silent_ms > watchdog_active_for_ms) {
+    return;
+  }
+  if (resets_since_valid != 0U && now - last_reset_ms < reset_interval_ms) {
+    return;
+  }
+  hub_debug::log("RS485_RX_STUCK silent_ms=%d\r\n",
+                 static_cast<int>(silent_ms));
+  reset_receiver();
+  last_reset_ms = k_uptime_get();
+  ++resets_since_valid;
+  reset_interval_ms = std::min(reset_interval_ms * 2, max_reset_interval_ms);
 }
 
 bool receive_byte_until(std::int64_t deadline, std::uint8_t &byte) {
@@ -308,6 +532,8 @@ int receive_message(std::uint16_t transfer_id, std::uint32_t timeout_ms,
       atomic_inc(&reassembly_error_count);
       continue;
     }
+    // Any intact frame proves the receive path works, even a stale one.
+    note_valid_frame();
     if (message.transfer_id != transfer_id ||
         message.destination != rig::config::hub_address ||
         (expected_source != 0xFFU && message.source != expected_source)) {
@@ -345,6 +571,15 @@ int initialize() {
   atomic_clear(&decode_error_count);
   atomic_clear(&reassembly_error_count);
   atomic_clear(&transmit_error_count);
+  atomic_clear(&receive_stop_count);
+  atomic_clear(&receive_restart_failure_count);
+  atomic_clear(&receiver_reset_count);
+  atomic_clear(&receiver_recovery_count);
+  atomic_clear(&receiver_kick_count);
+  atomic_clear(&receiver_running);
+  atomic_clear(&deliberate_stop);
+  atomic_clear(&bytes_since_valid);
+  atomic_clear(&stops_since_valid);
   atomic_clear(&transmit_result);
   clear_receive_ring();
   int error = uart_callback_set(uart, uart_event_callback, nullptr);
@@ -361,6 +596,7 @@ int exchange(std::uint8_t destination, rig::transport::Channel channel,
              bool acknowledge_response) {
   const std::uint16_t transfer = allocate_transfer();
   k_mutex_lock(&bus_mutex, K_FOREVER);
+  check_receiver_watchdog();
   drain_input();
   int result = -ETIMEDOUT;
   for (unsigned int attempt = 0; attempt < 2; ++attempt) {
@@ -427,6 +663,12 @@ Diagnostics diagnostics() {
       static_cast<std::uint32_t>(atomic_get(&decode_error_count)),
       static_cast<std::uint32_t>(atomic_get(&reassembly_error_count)),
       static_cast<std::uint32_t>(atomic_get(&transmit_error_count)),
+      static_cast<std::uint32_t>(atomic_get(&receive_stop_count)),
+      static_cast<std::uint32_t>(atomic_get(&receive_restart_failure_count)),
+      static_cast<std::uint32_t>(atomic_get(&receiver_reset_count)),
+      static_cast<std::uint32_t>(atomic_get(&receiver_recovery_count)),
+      static_cast<std::uint32_t>(atomic_get(&receiver_kick_count)),
+      atomic_get(&receiver_running) != 0,
   };
 }
 
