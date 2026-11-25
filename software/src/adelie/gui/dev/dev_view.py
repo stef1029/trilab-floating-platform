@@ -22,6 +22,7 @@ from .board_setup import BoardSetupPanel
 from .boards_tab import BoardsTab
 from .link_panel import TransportDiagnostics
 from .sensors_panel import LocalSensorsPanel
+from .serial_console import SerialConsole
 from .ttl_panel import TtlDiagnostics
 
 
@@ -103,6 +104,7 @@ class DevView(QWidget):
         self.sensors = LocalSensorsPanel()
         self.sensors.status_led_requested.connect(controller.set_status_led)
         self.board_setup = BoardSetupPanel(controller)
+        self.serial = SerialConsole()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(vertical_scroll(self.boards), "Boards")
@@ -110,6 +112,7 @@ class DevView(QWidget):
         self.tabs.addTab(_page(self.ttl_controls, self.ttl), "TTL && sync")
         self.tabs.addTab(_page(self.sensors), "Hub sensors && power")
         self.tabs.addTab(_page(self.board_setup, stretch_last=False), "Board setup")
+        self.tabs.addTab(self.serial, "Hub serial")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

@@ -104,5 +104,6 @@ class MainWindow(QMainWindow):
         self.dev_view.refresh(diagnostics)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]  # noqa: N802
+        self.dev_view.serial.close_port()
         self.controller.disconnect()
         event.accept()
