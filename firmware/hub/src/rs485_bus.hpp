@@ -36,6 +36,8 @@ struct Diagnostics {
   // Resets where the driver never confirmed the stop and the receiver had
   // to be kicked in hardware.
   std::uint32_t receiver_kicks{};
+  // Wedges caught by the fast check (a UART stop the driver never finished).
+  std::uint32_t receiver_wedges{};
   bool receiver_running{};
 };
 

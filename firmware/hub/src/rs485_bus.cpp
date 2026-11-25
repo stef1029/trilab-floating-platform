@@ -39,6 +39,7 @@ atomic_t receive_restart_failure_count;
 atomic_t receiver_reset_count;
 atomic_t receiver_recovery_count;
 atomic_t receiver_kick_count;
+atomic_t receiver_wedge_count;
 
 /*
  * Receiver watchdog.
@@ -54,14 +55,26 @@ atomic_t receiver_kick_count;
  * waits for the driver to confirm, and starts it again. It backs off between
  * attempts so an intentionally empty bus is not reset forever. It never
  * reboots the hub.
+ *
+ * The known failure is caught much sooner by the wedge check: a UART error
+ * (RX_STOPPED) is normally followed by RX_DISABLED within about 0.1 ms. If
+ * RX_DISABLED is still missing wedge_after_ms later, the driver has lost the
+ * stop and the receiver is reset straight away, before the next attempt.
+ * The silence watchdog stays as a backstop for anything else.
  */
 inline constexpr std::int64_t stuck_after_ms = 1000;
 inline constexpr std::int64_t watchdog_active_for_ms = 60'000;
 inline constexpr std::int64_t first_reset_interval_ms = 1000;
 inline constexpr std::int64_t max_reset_interval_ms = 32'000;
-inline constexpr std::int32_t rx_disable_wait_ms = 20;
+// A healthy stop completes in a few byte times (~0.1 ms at 460800 baud).
+inline constexpr std::int32_t rx_disable_wait_ms = 2;
+inline constexpr std::uint32_t wedge_after_ms = 5;
 
 atomic_t receiver_running;
+// Set by RX_STOPPED, cleared by RX_DISABLED. stop_pending_since_ms is the
+// 32-bit uptime of the RX_STOPPED that is still waiting.
+atomic_t stop_pending;
+atomic_t stop_pending_since_ms;
 // Set while the watchdog stops reception itself, so the RX_DISABLED callback
 // leaves the restart to the watchdog.
 atomic_t deliberate_stop;
@@ -203,6 +216,9 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
     note_receive_fault();
     atomic_inc(&receive_stop_count);
     atomic_inc(&stops_since_valid);
+    atomic_set(&stop_pending_since_ms,
+               static_cast<atomic_val_t>(k_uptime_get_32()));
+    atomic_set(&stop_pending, 1);
 
     hub_debug::log("RS485_RX_STOPPED reason=0x%08x\r\n",
                       static_cast<unsigned>(event->data.rx_stop.reason));
@@ -211,6 +227,7 @@ void uart_event_callback(const device *receiver, struct uart_event *event,
 
   case UART_RX_DISABLED: {
     atomic_set(&receiver_running, 0);
+    atomic_set(&stop_pending, 0);
     if (atomic_get(&deliberate_stop) != 0) {
       // The watchdog stopped reception and restarts it itself.
       k_sem_give(&receiver_disabled);
@@ -325,11 +342,15 @@ void kick_receiver() {
 /*
  * Stop reception, wait for the driver to confirm, then start it again. If
  * the driver never confirms the stop, kick the receiver so it can, then
- * start again. Caller holds bus_mutex.
+ * start again. Verbose resets (the silence watchdog) log register snapshots;
+ * quiet ones (the wedge check, which can fire often during noisy audio) log
+ * one line. Caller holds bus_mutex.
  */
-void reset_receiver() {
+void reset_receiver(bool verbose, const char *reason) {
   atomic_inc(&receiver_reset_count);
-  log_receiver_snapshot("before_reset");
+  if (verbose) {
+    log_receiver_snapshot("before_reset");
+  }
 
   k_sem_reset(&receiver_disabled);
   atomic_set(&deliberate_stop, 1);
@@ -343,10 +364,15 @@ void reset_receiver() {
       kick_receiver();
       kick_wait_error =
           k_sem_take(&receiver_disabled, K_MSEC(rx_disable_wait_ms));
-      log_receiver_snapshot("after_kick");
+      if (verbose) {
+        log_receiver_snapshot("after_kick");
+      }
     }
   }
   atomic_set(&deliberate_stop, 0);
+  // Whatever happened, this stop is dealt with. If the restart below fails,
+  // the silence watchdog takes over rather than the wedge check repeating.
+  atomic_set(&stop_pending, 0);
 
   // -EFAULT from uart_rx_disable() means the driver had no receive buffer,
   // so it already considered reception stopped.
@@ -355,11 +381,34 @@ void reset_receiver() {
   if (start_error != 0) {
     atomic_inc(&receive_restart_failure_count);
   }
-  hub_debug::log("RS485_RX_RESET disable_err=%d wait_err=%d kick_wait_err=%d "
-                 "start_err=%d attempt=%u\r\n",
-                 disable_error, wait_error, kick_wait_error, start_error,
-                 static_cast<unsigned>(resets_since_valid + 1U));
-  log_receiver_snapshot("after_reset");
+  hub_debug::log("RS485_RX_RESET reason=%s disable_err=%d wait_err=%d "
+                 "kick_wait_err=%d start_err=%d\r\n",
+                 reason, disable_error, wait_error, kick_wait_error,
+                 start_error);
+  if (verbose) {
+    log_receiver_snapshot("after_reset");
+  }
+}
+
+/*
+ * Fast check for the known wedge: an RX_STOPPED whose RX_DISABLED never
+ * arrived. Runs before every exchange attempt, so a wedge costs one attempt
+ * rather than a second of silence. Caller holds bus_mutex.
+ */
+void check_receiver_wedge() {
+  if (atomic_get(&stop_pending) == 0) {
+    return;
+  }
+  const std::uint32_t since =
+      static_cast<std::uint32_t>(atomic_get(&stop_pending_since_ms));
+  const std::uint32_t age_ms = k_uptime_get_32() - since;
+  if (age_ms < wedge_after_ms) {
+    return;
+  }
+  atomic_inc(&receiver_wedge_count);
+  hub_debug::log("RS485_RX_WEDGED stop_age_ms=%u\r\n",
+                 static_cast<unsigned>(age_ms));
+  reset_receiver(false, "wedge");
 }
 
 void note_valid_frame() {
@@ -391,9 +440,10 @@ void check_receiver_watchdog() {
   if (resets_since_valid != 0U && now - last_reset_ms < reset_interval_ms) {
     return;
   }
-  hub_debug::log("RS485_RX_STUCK silent_ms=%d\r\n",
-                 static_cast<int>(silent_ms));
-  reset_receiver();
+  hub_debug::log("RS485_RX_STUCK silent_ms=%d attempt=%u\r\n",
+                 static_cast<int>(silent_ms),
+                 static_cast<unsigned>(resets_since_valid + 1U));
+  reset_receiver(true, "silence");
   last_reset_ms = k_uptime_get();
   ++resets_since_valid;
   reset_interval_ms = std::min(reset_interval_ms * 2, max_reset_interval_ms);
@@ -576,6 +626,8 @@ int initialize() {
   atomic_clear(&receiver_reset_count);
   atomic_clear(&receiver_recovery_count);
   atomic_clear(&receiver_kick_count);
+  atomic_clear(&receiver_wedge_count);
+  atomic_clear(&stop_pending);
   atomic_clear(&receiver_running);
   atomic_clear(&deliberate_stop);
   atomic_clear(&bytes_since_valid);
@@ -603,6 +655,9 @@ int exchange(std::uint8_t destination, rig::transport::Channel channel,
     if (attempt != 0U) {
       atomic_inc(&retry_count);
     }
+    // Before every attempt, so a wedge during the first attempt's reply is
+    // cleared before the retry is sent.
+    check_receiver_wedge();
     if (!transmit_message(destination, channel, transfer, flags, payload,
                           payload_length)) {
       atomic_inc(&transmit_error_count);
@@ -668,6 +723,7 @@ Diagnostics diagnostics() {
       static_cast<std::uint32_t>(atomic_get(&receiver_reset_count)),
       static_cast<std::uint32_t>(atomic_get(&receiver_recovery_count)),
       static_cast<std::uint32_t>(atomic_get(&receiver_kick_count)),
+      static_cast<std::uint32_t>(atomic_get(&receiver_wedge_count)),
       atomic_get(&receiver_running) != 0,
   };
 }
